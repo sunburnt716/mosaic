@@ -1,0 +1,25 @@
+# Source registry — the single place where all ingestion sources are declared.
+#
+# This file is DATA, not code. Each entry must conform to the SourceConfig schema
+# defined in core/source_config.py. The engine loads this file at startup; no restart
+# or code change is needed to add, remove, or disable a source.
+#
+# Tier reference (stamp once at ingest, never infer later):
+#   0 — primary / regulatory  : SEC EDGAR filings, Fed releases, exchange notices
+#   1 — major wire services   : Reuters, AP, Bloomberg wire feeds
+#   2 — quality financial press: WSJ, FT, Barron's, Seeking Alpha (curated)
+#   3 — signal / high-volume  : Reddit, Twitter/X, StockTwits — treat as leading indicator only
+#
+# Entry shape (all fields documented in core/source_config.py):
+#   - name:     <unique-identifier>
+#     adapter:  <rss | rest_json | edgar>
+#     tier:     <0–3>
+#     url:      <fetch endpoint>
+#     enabled:  <true | false>
+#     schedule: <cron or interval>   # optional
+#     params:   {}                   # optional, adapter-specific
+#     headers:  {}                   # optional, e.g. auth tokens
+#
+# Sources are listed in tier order (most trusted first) so the file is easy to audit.
+# Disabled sources are kept here (enabled: false) rather than deleted so config history
+# is preserved and re-enabling requires only a one-line change.
