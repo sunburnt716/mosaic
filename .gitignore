@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Runtime state (generated, not config)
+ingestion/config/poll_state.json
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# pytest
+.pytest_cache/
