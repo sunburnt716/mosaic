@@ -12,7 +12,6 @@ from ingestion.storage.raw_store import RawStore
 from ingestion.storage.seen_store import SeenStore
 from tests.conftest import make_document
 
-
 # ---------------------------------------------------------------------------
 # SeenStore
 # ---------------------------------------------------------------------------

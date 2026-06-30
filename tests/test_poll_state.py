@@ -10,14 +10,13 @@ Covers:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import json
 import pytest
 
 from ingestion.storage.poll_state import PollState, PollStateStore
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -75,7 +74,10 @@ class TestPollStateStoreReads:
 
     def test_get_returns_none_for_unknown_source(self, tmp_path: Path):
         store = PollStateStore(tmp_path / "poll_state.json")
-        store.set("source-a", PollState(last_polled_at=utc(2024, 1, 1), etag=None, last_modified=None))
+        store.set(
+            "source-a",
+            PollState(last_polled_at=utc(2024, 1, 1), etag=None, last_modified=None),
+        )
         assert store.get("source-b") is None
 
     def test_missing_state_file_returns_none(self, tmp_path: Path):
@@ -210,7 +212,13 @@ class TestPollStateStoreResilience:
         # Simulate a state file written before timezone enforcement was added.
         path = tmp_path / "poll_state.json"
         path.write_text(
-            json.dumps({"source": {"last_polled_at": "2024-01-01T00:00:00", "etag": None, "last_modified": None}}),
+            json.dumps({
+                "source": {
+                    "last_polled_at": "2024-01-01T00:00:00",
+                    "etag": None,
+                    "last_modified": None,
+                }
+            }),
             encoding="utf-8",
         )
         store = PollStateStore(path)

@@ -11,21 +11,16 @@ Covers:
   - run_forever: stop_event set before start exits without ticking, runs ticks then
     stops cleanly.
 """
+
 from __future__ import annotations
 
 import threading
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, call, patch
 
-import pytest
-import yaml
-
-from ingestion.core.source_config import SourceConfig, load_sources
+from ingestion.core.source_config import SourceConfig
 from ingestion.run import is_due, run_forever, select_due_sources, tick
-from ingestion.storage.poll_state import PollState, PollStateStore
-
+from ingestion.storage.poll_state import PollState
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -159,15 +154,27 @@ class TestSelectDueSources:
     def test_none_due_returns_empty(self):
         sources = [make_source("a"), make_source("b")]
         # Polled 1 second ago, interval is 5 minutes.
-        just_polled = PollState(last_polled_at=self.NOW - timedelta(seconds=1), etag=None, last_modified=None)
+        just_polled = PollState(
+            last_polled_at=self.NOW - timedelta(seconds=1),
+            etag=None,
+            last_modified=None,
+        )
         store = FakePollStateStore({"a": just_polled, "b": just_polled})
         due = select_due_sources(sources, store, self.NOW)
         assert due == []
 
     def test_mixed_only_due_returned(self):
         sources = [make_source("due"), make_source("not-due")]
-        overdue = PollState(last_polled_at=self.NOW - timedelta(hours=1), etag=None, last_modified=None)
-        recent = PollState(last_polled_at=self.NOW - timedelta(seconds=10), etag=None, last_modified=None)
+        overdue = PollState(
+            last_polled_at=self.NOW - timedelta(hours=1),
+            etag=None,
+            last_modified=None,
+        )
+        recent = PollState(
+            last_polled_at=self.NOW - timedelta(seconds=10),
+            etag=None,
+            last_modified=None,
+        )
         store = FakePollStateStore({"due": overdue, "not-due": recent})
         due = select_due_sources(sources, store, self.NOW)
         assert [s.name for s in due] == ["due"]
@@ -180,7 +187,11 @@ class TestSelectDueSources:
 
     def test_disabled_and_overdue_still_skipped(self):
         disabled = make_source("overdue-disabled", enabled=False)
-        overdue = PollState(last_polled_at=self.NOW - timedelta(days=365), etag=None, last_modified=None)
+        overdue = PollState(
+            last_polled_at=self.NOW - timedelta(days=365),
+            etag=None,
+            last_modified=None,
+        )
         store = FakePollStateStore({"overdue-disabled": overdue})
         due = select_due_sources([disabled], store, self.NOW)
         assert due == []
@@ -191,8 +202,16 @@ class TestSelectDueSources:
             make_source("disabled", enabled=False),
             make_source("enabled-not-due"),
         ]
-        overdue = PollState(last_polled_at=self.NOW - timedelta(hours=1), etag=None, last_modified=None)
-        recent = PollState(last_polled_at=self.NOW - timedelta(seconds=1), etag=None, last_modified=None)
+        overdue = PollState(
+            last_polled_at=self.NOW - timedelta(hours=1),
+            etag=None,
+            last_modified=None,
+        )
+        recent = PollState(
+            last_polled_at=self.NOW - timedelta(seconds=1),
+            etag=None,
+            last_modified=None,
+        )
         store = FakePollStateStore({"enabled-due": overdue, "enabled-not-due": recent})
         due = select_due_sources(sources, store, self.NOW)
         assert [s.name for s in due] == ["enabled-due"]
@@ -203,7 +222,13 @@ class TestSelectDueSources:
 
     def test_source_with_no_state_entry_is_treated_as_never_polled(self):
         source = make_source("fresh")
-        store = FakePollStateStore({"other-source": PollState(last_polled_at=self.NOW, etag=None, last_modified=None)})
+        store = FakePollStateStore(
+            {"other-source": PollState(
+                last_polled_at=self.NOW,
+                etag=None,
+                last_modified=None,
+            )}
+        )
         due = select_due_sources([source], store, self.NOW)
         assert [s.name for s in due] == ["fresh"]
 
@@ -218,7 +243,11 @@ class TestTick:
 
     def _overdue_store(self, *names: str) -> FakePollStateStore:
         """Return a store where the given sources have old poll timestamps (overdue)."""
-        overdue = PollState(last_polled_at=self.NOW - timedelta(hours=1), etag=None, last_modified=None)
+        overdue = PollState(
+            last_polled_at=self.NOW - timedelta(hours=1),
+            etag=None,
+            last_modified=None,
+        )
         return FakePollStateStore({name: overdue for name in names})
 
     def test_dispatches_due_source(self):
@@ -230,7 +259,11 @@ class TestTick:
 
     def test_does_not_dispatch_non_due_source(self):
         source = make_source("s")
-        recent = PollState(last_polled_at=self.NOW - timedelta(seconds=1), etag=None, last_modified=None)
+        recent = PollState(
+            last_polled_at=self.NOW - timedelta(seconds=1),
+            etag=None,
+            last_modified=None,
+        )
         store = FakePollStateStore({"s": recent})
         engine = StubEngine()
         tick([source], store, engine, self.NOW)
@@ -271,7 +304,11 @@ class TestTick:
 
     def test_no_due_sources_engine_never_called(self):
         source = make_source("s")
-        recent = PollState(last_polled_at=self.NOW - timedelta(seconds=1), etag=None, last_modified=None)
+        recent = PollState(
+            last_polled_at=self.NOW - timedelta(seconds=1),
+            etag=None,
+            last_modified=None,
+        )
         store = FakePollStateStore({"s": recent})
         engine = StubEngine()
         tick([source], store, engine, self.NOW)

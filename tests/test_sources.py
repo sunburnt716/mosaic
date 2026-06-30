@@ -10,7 +10,6 @@ import json
 from ingestion.core.source_config import SourceConfig
 from ingestion.sources import DEFAULT_REGISTRY_PATH, load_sources
 
-
 # ---------------------------------------------------------------------------
 # Loader mechanics (crafted JSON via tmp_path)
 # ---------------------------------------------------------------------------

@@ -12,7 +12,8 @@ Contract under test:
   L2 — identity_key in store with a *different* content_hash → article was updated
        Action: ingest the new version; do NOT discard.
 
-  L3 — no identity_key match, but embedding similarity exceeds threshold → same story, different outlet
+  L3 — no identity_key match, but embedding similarity exceeds threshold → same story,
+       different outlet.
        Action: ingest BOTH. Never discard L3 — cross-outlet corroboration must be preserved.
 
   NEW — no match at any level → ingest normally.
@@ -22,7 +23,6 @@ Note: MockSeenStore below stands in for ingestion/storage/seen_store.py until th
 
 from ingestion.pipeline.dedup import DedupResult, classify
 from tests.conftest import make_document
-
 
 # ---------------------------------------------------------------------------
 # Test double for SeenStore (real impl lives in ingestion/storage/seen_store.py)

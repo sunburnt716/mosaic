@@ -6,8 +6,7 @@ is tested against the title patterns observed in tests/fixtures/sec-edgar.xml.
 
 import pytest
 
-from ingestion.pipeline.transforms import get_transform, edgar_filing_url
-
+from ingestion.pipeline.transforms import edgar_filing_url, get_transform
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -137,8 +136,10 @@ class TestEdgarFixtureRoundtrip:
 
     @pytest.mark.parametrize("entry_index", [0, 1, 2])
     def test_normalize_produces_valid_document(self, entry_index, fetched_at):
-        import feedparser
         from pathlib import Path
+
+        import feedparser
+
         from ingestion.core.source_config import SourceConfig
         from ingestion.pipeline.normalizer import normalize
 
@@ -199,8 +200,10 @@ class TestEdgarFixtureRoundtrip:
         dashes stripped) in the entry link; the transform must pass it through untouched
         and clean only the title.
         """
-        import feedparser
         from pathlib import Path
+
+        import feedparser
+
         from ingestion.core.source_config import SourceConfig
         from ingestion.pipeline.normalizer import normalize
 

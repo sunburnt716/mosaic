@@ -19,7 +19,6 @@ from ingestion.pipeline.normalizer import NormalizationError, normalize
 from tests.conftest import load_fixture, make_document, make_source_config
 from tests.test_dedup import MockSeenStore
 
-
 # ---------------------------------------------------------------------------
 # Hashing edge cases
 # ---------------------------------------------------------------------------

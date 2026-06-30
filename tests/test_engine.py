@@ -15,7 +15,6 @@ from ingestion.storage.raw_store import RawStore
 from ingestion.storage.seen_store import SeenStore
 from tests.conftest import load_fixture, make_source_config
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -154,8 +153,9 @@ class TestEngineL2Update:
         run([rss_config], raw, seen, poll)
 
         # The document in the store should reflect the updated title.
-        from ingestion.pipeline.normalizer import normalize
         from datetime import datetime, timezone
+
+        from ingestion.pipeline.normalizer import normalize
 
         doc_v2 = normalize(item_v2, rss_config, datetime.now(timezone.utc))
         stored = raw.get_document(doc_v2.id)

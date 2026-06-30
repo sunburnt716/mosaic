@@ -1,4 +1,5 @@
-"""Adapter registry — maps the string adapter key in config/sources.json to a concrete Adapter class.
+"""Adapter registry — maps the string adapter key in config/sources.json to a concrete
+Adapter class.
 
 To register a new adapter:
   1. Implement the Adapter ABC in a new file under adapters/.

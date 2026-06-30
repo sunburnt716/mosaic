@@ -37,9 +37,9 @@ class TestNormalizerStampsUnprocessed:
 
     def test_document_default_status_is_unprocessed(self):
         # The contract's canonical initial state (the normalizer relies on this default).
-        from ingestion.core.document import Document
-
         import dataclasses
+
+        from ingestion.core.document import Document
 
         status_field = next(
             f for f in dataclasses.fields(Document) if f.name == "status"

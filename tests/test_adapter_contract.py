@@ -26,8 +26,8 @@ from ingestion.adapters.base import (
     NotModifiedSignal,
     TransportError,
 )
-from ingestion.adapters.rss import RssAdapter
 from ingestion.adapters.rest_json import RestJsonAdapter
+from ingestion.adapters.rss import RssAdapter
 from tests.conftest import FakeResponse, load_fixture, make_source_config
 
 _CHALLENGE_HTML = (

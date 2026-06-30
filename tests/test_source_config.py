@@ -17,7 +17,6 @@ import yaml
 
 from ingestion.core.source_config import SourceConfig, _parse_interval, load_sources
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
