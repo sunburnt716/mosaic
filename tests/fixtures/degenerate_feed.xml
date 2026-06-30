@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SYNTHETIC fixture (not a captured live payload). Represents a degenerate batch: a feed
+  that parses fine and whose records each pass per-record validation, but that is
+  collectively broken — every item points at the same URL, has an empty body, and carries
+  a placeholder title. This is the shape the soft quality gate must flag (URL_COLLAPSE,
+  IDENTITY_COLLAPSE, BODY_EMPTY, TITLE_FALLBACK) without dropping anything.
+  Each item has a valid pubDate + absolute link so it survives normalization.
+-->
+<rss version="2.0">
+  <channel>
+    <title>Degenerate Source</title>
+    <link>https://example.com/feed</link>
+    <description>All items collapse to one link with empty bodies.</description>
+    <item>
+      <title>Untitled</title>
+      <link>https://example.com/same-article</link>
+      <description></description>
+      <pubDate>Mon, 15 Jan 2024 14:30:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Untitled</title>
+      <link>https://example.com/same-article</link>
+      <description></description>
+      <pubDate>Mon, 15 Jan 2024 14:31:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Untitled</title>
+      <link>https://example.com/same-article</link>
+      <description></description>
+      <pubDate>Mon, 15 Jan 2024 14:32:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Untitled</title>
+      <link>https://example.com/same-article</link>
+      <description></description>
+      <pubDate>Mon, 15 Jan 2024 14:33:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Untitled</title>
+      <link>https://example.com/same-article</link>
+      <description></description>
+      <pubDate>Mon, 15 Jan 2024 14:34:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Untitled</title>
+      <link>https://example.com/same-article</link>
+      <description></description>
+      <pubDate>Mon, 15 Jan 2024 14:35:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

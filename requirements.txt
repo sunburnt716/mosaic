@@ -1,2 +1,22 @@
+<<<<<<< HEAD
 pyyaml>=6.0
 pytest>=8.0
+=======
+# Core dependencies
+feedparser>=6.0.0
+requests>=2.31.0
+pyyaml>=6.0.0
+chromadb>=0.4.0
+
+# Embeddings
+sentence-transformers>=2.2.0
+
+# LLM clients
+groq>=0.4.0
+google-generativeai>=0.4.0
+
+# Dev / test
+pytest>=8.0.0
+pytest-mock>=3.12.0
+ruff>=0.3.0
+>>>>>>> main

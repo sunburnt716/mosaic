@@ -1,34 +1,60 @@
-# Pure classification stage: decides, for each incoming Document, which dedup level it triggers.
-#
-# Dedup has three distinct levels that must NEVER be collapsed into one — each catches a
-# different failure mode and requires a different response from the engine.
-#
-# classify(doc: Document, seen_store: SeenStore) -> DedupResult
-#   Returns one of: NEW | L1_DUPLICATE | L2_UPDATE | L3_NEAR_DUPLICATE
-#
-# Level definitions:
-#
-#   L1 — Exact duplicate (content hash match)
-#     doc.content_hash is already in seen_store.
-#     The document is byte-for-byte identical to one we've already ingested.
-#     Action: discard silently. Nothing new to store or embed.
-#
-#   L2 — Same article, updated (identity key match, different content hash)
-#     doc.identity_key is in seen_store, but with a different content_hash.
-#     The source has updated an article we already have (correction, expansion, etc.).
-#     Action: store the new version; the engine may choose to re-embed and replace
-#     the previous Chroma entry. The old raw_payload should be retained for audit.
-#
-#   L3 — Near-duplicate / same story, different outlet (embedding similarity)
-#     No identity_key match, but embedding similarity to an existing document exceeds threshold.
-#     Two outlets are covering the same underlying event.
-#     Action: ingest BOTH — do not discard. L3 preserves cross-outlet corroboration so
-#     retrieval can surface the same story from multiple sources for trust assessment.
-#     Tag the document with a cluster_id linking it to its near-duplicates.
-#
-#   NEW — No match at any level.
-#     Action: ingest normally.
-#
-# This function is pure with respect to classification logic. The SeenStore is read-only here;
-# the engine is responsible for updating the store after a decision is made.
-# L3 embedding comparison uses pre-computed embeddings — this module does not call any model.
+"""Pure classification stage: which dedup level does an incoming Document trigger?
+
+The three levels must NEVER be collapsed — each catches a different failure mode and
+requires a different response from the engine. See the contract in test_dedup.py.
+
+  classify(doc, seen_store, embedding=None) -> DedupResult
+
+Priority is strict: L1 (content hash) > L2 (identity key) > L3 (embedding) > NEW.
+  L1  exact bytes already seen            -> discard silently
+  L2  same identity_key, different hash   -> article updated; ingest new version
+  L3  no key match, embedding too similar -> same story, different outlet; ingest BOTH
+  NEW no match at any level               -> ingest normally
+
+This module is read-only w.r.t. the SeenStore and never calls an embedding model;
+L3 compares pre-computed embeddings supplied by the caller.
+"""
+
+import math
+from enum import Enum
+
+# Cosine-similarity threshold above which two documents are treated as the same story.
+L3_SIMILARITY_THRESHOLD = 0.85
+
+
+class DedupResult(Enum):
+    NEW = "new"
+    L1_DUPLICATE = "l1_duplicate"
+    L2_UPDATE = "l2_update"
+    L3_NEAR_DUPLICATE = "l3_near_duplicate"
+
+
+def _cosine_similarity(a, b) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def classify(doc, seen_store, embedding=None) -> DedupResult:
+    # L1 — exact content match wins over everything (content unchanged, not an update).
+    if seen_store.contains_hash(doc.content_hash):
+        return DedupResult.L1_DUPLICATE
+
+    # L2 — same logical article seen before, but the content differs: it was updated.
+    stored_hash = seen_store.get_hash(doc.identity_key)
+    if stored_hash is not None and stored_hash != doc.content_hash:
+        return DedupResult.L2_UPDATE
+
+    # L3 — no identity match, but semantically near an existing doc: cross-outlet story.
+    if embedding is not None:
+        for _doc_id, stored_embedding in seen_store.get_embeddings():
+            if (
+                _cosine_similarity(embedding, stored_embedding)
+                >= L3_SIMILARITY_THRESHOLD
+            ):
+                return DedupResult.L3_NEAR_DUPLICATE
+
+    return DedupResult.NEW
