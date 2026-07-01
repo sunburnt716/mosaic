@@ -48,9 +48,10 @@ def _parse_interval(s: str) -> timedelta:
     return timedelta(seconds=int(s[:-1]) * units[unit])
 
 
-def _sources_due(configs, poll_state_store) -> list[SourceConfig]:
+def _sources_due(configs, poll_state_store, *, now=None) -> list[SourceConfig]:
     """Return configs whose next poll time has arrived."""
-    now = datetime.now(timezone.utc)
+    if now is None:
+        now = datetime.now(timezone.utc)
     due = []
     for config in configs:
         if not config.enabled:
