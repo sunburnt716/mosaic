@@ -81,9 +81,8 @@ def normalize(raw: dict, config: SourceConfig, fetched_at: datetime) -> Document
     url = raw.get(params.get("url_field", "url"))
     if not url:
         raise NormalizationError(f"missing url for source {config.name!r}")
-    # Per-record contract: the URL must be absolute and parseable. This catches a
-    # transform that produced a broken URL (e.g. the old EDGAR list-repr bug) before it
-    # reaches the store, where a malformed citation URL would be useless to synthesis.
+    # Per-record contract: reject any URL that isn't an absolute http(s) URL (no scheme
+    # or no host). A citation URL that synthesis cannot resolve is worthless downstream.
     parsed_url = urlparse(url)
     if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
         raise NormalizationError(f"unparseable url for source {config.name!r}: {url!r}")

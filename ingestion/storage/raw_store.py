@@ -2,13 +2,16 @@
 
 Two tables:
   raw_payloads(doc_id PK, payload JSON, saved_at)  — written once, never mutated
-  documents(doc_id PK, data JSON, saved_at)         — overwritten on L2 update
+  documents(doc_id PK, data JSON, saved_at)         — one row per content version
 
   save_raw(doc_id, raw_payload)        INSERT OR IGNORE (append-only; idempotent)
-  save_document(doc)                   INSERT OR REPLACE (allows L2 overwrite)
+  save_document(doc)                   INSERT OR REPLACE (idempotent; re-ingesting
+                                       the same doc_id is a no-op overwrite)
   get_document(doc_id) -> Document|None
   get_raw(doc_id) -> dict|None
 
+doc_id is derived from (identity_key, content_hash), so an L2 update produces a new
+doc_id and inserts a new row alongside the old version — both versions are retained.
 Documents are serialized to JSON via dataclasses.asdict; datetimes stored as ISO-8601.
 The raw_payload is stored as-is (JSON-encoded). Downstream stages re-run from this
 store without re-fetching from external sources.

@@ -104,7 +104,7 @@ def make_document(
     tickers: list | None = None,
     sectors: list | None = None,
     key_points: list | None = None,
-    status: str = "ingested",
+    status: str = "unprocessed",
 ):
     """Build a fully-populated Document for use in tests."""
     from ingestion.core.document import Document

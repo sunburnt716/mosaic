@@ -13,7 +13,7 @@
 #   2 — quality financial press: WSJ, FT, Barron's
 #   3 — signal / high-volume  : Reddit, Twitter/X, StockTwits (leading indicator only)
 #
-# poll_interval format: a positive duration string — "30s", "5m", "1h", "1h30m".
+# poll_interval format: a single-unit duration string — "30s", "5m", "1h" (one unit only).
 # doc_type controls downstream chunking: "article" = by paragraph, "filing" = by section.
 # field_mappings: maps schema field names → adapter-specific payload keys.
 #   e.g. {"body": "summary"} means the adapter's "summary" key → Document.body.
