@@ -1,0 +1,16 @@
+[
+  {
+    "url": "https://news.example.com/markets/a1",
+    "title": "Markets rise on rate-cut hopes",
+    "content": "<p>Stocks rose broadly as investors priced in a rate cut.</p>",
+    "publishedAt": "2026-01-01T12:00:00Z",
+    "id": "a1"
+  },
+  {
+    "url": "https://news.example.com/markets/a2",
+    "title": "Bond yields slip",
+    "content": "<p>Treasury yields fell after the report.</p>",
+    "publishedAt": "2026-01-01T13:00:00Z",
+    "id": "a2"
+  }
+]

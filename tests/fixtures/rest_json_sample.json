@@ -1,0 +1,17 @@
+{
+  "url": "https://newsapi.example.com/v2/articles/fed-rate-cut-jan2024",
+  "title": "Federal Reserve Cuts Rates for First Time Since Pandemic",
+  "raw_body": "<div class=\"article-body\"><p>The Federal Reserve announced a 25 basis point rate cut on Wednesday, marking a pivot in monetary policy.</p></div>",
+  "published": "2024-01-15T14:30:00Z",
+  "source_article_id": "newsapi-fed-rate-cut-jan2024",
+  "raw_payload": {
+    "status": "ok",
+    "source": {"id": "reuters", "name": "Reuters"},
+    "author": "Reuters Staff",
+    "title": "Federal Reserve Cuts Rates for First Time Since Pandemic",
+    "description": "The Federal Reserve announced a 25 basis point rate cut on Wednesday.",
+    "url": "https://newsapi.example.com/v2/articles/fed-rate-cut-jan2024",
+    "publishedAt": "2024-01-15T14:30:00Z",
+    "content": "<div class=\"article-body\"><p>The Federal Reserve announced a 25 basis point rate cut on Wednesday, marking a pivot in monetary policy.</p></div>"
+  }
+}

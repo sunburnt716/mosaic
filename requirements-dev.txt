@@ -1,0 +1,6 @@
+# Test + lint dependencies only — kept separate from runtime requirements.txt so CI
+# can run the unit suite fast. The ingestion modules import feedparser/requests/etc.
+# lazily (inside the network methods), so unit tests need none of the heavy runtime deps.
+pytest>=8.0.0
+pytest-mock>=3.12.0
+ruff>=0.3.0
