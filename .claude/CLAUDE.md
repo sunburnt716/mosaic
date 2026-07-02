@@ -14,7 +14,8 @@ processing (chunk + embed) → Chroma → retrieval (search + re-rank + cluster)
 
 **Currently building:** the ingestion engine (everything up to and including dedup)
 and the **processing extraction engine** (downstream of storage). Processing Phase 0
-(document-type inference + validation) is in place; see "Processing layer" below.
+(document-type inference + validation) and Phase 1 (chunking — Documents → `Chunk`s by
+inferred `document_type`) are in place; see "Processing layer" below.
 
 ## Core principles (always)
 - **Structure mirrors the pipeline.** File/function layout follows data flow,
@@ -105,6 +106,31 @@ Tier 2 depends on velocity). One scheduler only — no second scheduler.
   `unknown` docs are *deferred* (a warning, still valid).
 - **Shared `processing/text_metrics.py`** owns token/paragraph/marker counting so
   inference and validation can never drift on those definitions (no duplicated logic).
+
+### Phase 1 decisions (chunking)
+- **Dispatch by inferred `document_type`.** `engine.chunk_document(doc)` → `chunkers/
+  registry.get_chunker(doc.document_type)`: `article → chunk_paragraph`, `filing →
+  chunk_section`, everything else (`tweet`, `unknown`, or `None` before inference) →
+  `chunk_fixed` (fallback). The registry maps the `type_inference` constants, so the
+  chunking vocabulary can't drift from inference's.
+- **Dual spans are load-bearing.** Every `Chunk` carries `full_span` (whole chunk, for
+  embedding/retrieval) and `highlight_span` (first-sentence excerpt, for citation) plus
+  provenance (`title`/`url`/`source_name`/`tier`/`published_date`) copied off the parent
+  Document so it survives into Chroma. Construction lives in `chunk.build_chunk` /
+  `materialize_chunks` — copied once, never per chunker.
+- **Reuse, don't re-derive structure.** The paragraph chunker splits on
+  `text_metrics.paragraph_spans` (offset sibling of `count_paragraphs`); section
+  detection reuses `text_metrics.FILING_MARKER_PATTERNS`. Structure is defined once so
+  inference, validation, and chunking never disagree.
+- **MiniLM tokenizer for chunk *sizing* (deliberate exception).** Phase 1 sizes/slices
+  chunks with the real MiniLM tokenizer (`processing/utils/tokenization.py`, lazy-loaded +
+  cached; adds `transformers`), so window sizes align with the Phase 2 embedder. This is a
+  *distinct* notion of "token" from `text_metrics.count_tokens` (the Phase-0 whitespace
+  proxy) and is the one place a model appears before Phase 2 — chunk sizing only, never
+  type detection (that stays heuristic). Chosen over the whitespace proxy on purpose.
+- **Pure, no I/O.** Chunking takes in-memory Documents and returns Chunks. The offline
+  test suite injects a word-level fake tokenizer (`tests/processing/conftest.py`) so it
+  never downloads MiniLM or imports `transformers`.
 
 ## Guardrails (prefer X over Y)
 - Prefer surfacing news + sources over generating advice. No buy/sell/hold, ever.

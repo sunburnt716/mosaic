@@ -1,2 +1,5 @@
 pyyaml>=6.0
 pytest>=8.0
+# Phase 1 chunking sizes chunks with the MiniLM tokenizer (embedding-aligned). transformers
+# provides AutoTokenizer; the unit suite injects a fake tokenizer and does not need it.
+transformers>=4.0

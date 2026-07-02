@@ -7,7 +7,12 @@ directly rather than only through their callers.
 
 from __future__ import annotations
 
-from processing.text_metrics import count_filing_markers, count_paragraphs, count_tokens
+from processing.text_metrics import (
+    count_filing_markers,
+    count_paragraphs,
+    count_tokens,
+    paragraph_spans,
+)
 
 
 class TestCountTokens:
@@ -35,6 +40,38 @@ class TestCountParagraphs:
     def test_empty_is_zero(self):
         assert count_paragraphs("") == 0
         assert count_paragraphs("   \n  ") == 0
+
+
+class TestParagraphSpans:
+    """paragraph_spans is the offset-returning sibling count_paragraphs is defined on."""
+
+    def test_spans_slice_back_to_blank_line_blocks(self):
+        text = "para one\n\npara two\n\npara three"
+        assert [text[s:e] for s, e in paragraph_spans(text)] == [
+            "para one",
+            "para two",
+            "para three",
+        ]
+
+    def test_spans_are_tight_excluding_surrounding_whitespace(self):
+        text = "  para one  \n\n  para two  "
+        assert [text[s:e] for s, e in paragraph_spans(text)] == ["para one", "para two"]
+
+    def test_single_newline_lines_each_span(self):
+        text = "line one\nline two\nline three"
+        assert [text[s:e] for s, e in paragraph_spans(text)] == [
+            "line one",
+            "line two",
+            "line three",
+        ]
+
+    def test_empty_has_no_spans(self):
+        assert paragraph_spans("") == []
+        assert paragraph_spans("   \n  ") == []
+
+    def test_count_paragraphs_equals_span_count(self):
+        for text in ("a\n\nb\n\nc", "one solid block", "l1\nl2", "", "   "):
+            assert count_paragraphs(text) == len(paragraph_spans(text))
 
 
 class TestCountFilingMarkers:
