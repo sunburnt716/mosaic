@@ -5,6 +5,7 @@ Builders use sane defaults so individual tests only override what they care abou
 """
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -116,8 +117,7 @@ def make_document(
         source_name=source_name,
         url=url,
         tier=tier,
-        published_date=published_date
-        or datetime(2024, 1, 15, 14, 30, tzinfo=timezone.utc),
+        published_date=published_date or datetime(2024, 1, 15, 14, 30, tzinfo=timezone.utc),
         title=title,
         body=body,
         doc_type=doc_type,
@@ -130,9 +130,77 @@ def make_document(
     )
 
 
+def make_chunk(
+    chunk_id: str = "abc123def456#0",
+    document_id: str = "abc123def456",
+    text: str = "The Federal Reserve cut interest rates by 25 basis points.",
+    full_span: tuple = (0, 58),
+    highlight_span: tuple = (0, 58),
+    title: str = "Fed cuts rates by 25 basis points",
+    url: str = "https://reuters.com/markets/us/fed-cuts-rates-2024-01-15/",
+    source_name: str = "Reuters",
+    tier: int = 1,
+    published_date: datetime | None = None,
+    chunked_at: str = "2024-01-15T15:05:00+00:00",
+):
+    """Build a fully-populated Chunk for use in extraction tests."""
+    from extraction.chunk import Chunk
+
+    return Chunk(
+        chunk_id=chunk_id,
+        document_id=document_id,
+        text=text,
+        full_span=full_span,
+        highlight_span=highlight_span,
+        title=title,
+        url=url,
+        source_name=source_name,
+        tier=tier,
+        published_date=published_date or datetime(2024, 1, 15, 14, 30, tzinfo=timezone.utc),
+        chunked_at=chunked_at,
+    )
+
+
+class FakeTokenizer:
+    """Word-level stand-in for the MiniLM fast tokenizer — offline, no model download.
+
+    Splits on whitespace; each run of non-space characters is one token whose char
+    offsets are its (start, end) in the text. Coarser than MiniLM's sub-word tokenizer,
+    but exact and deterministic — enough to drive the chunkers' boundary/offset logic
+    without pulling in `transformers` (mirrors FakeResponse for the network adapters).
+    """
+
+    _WORD_RE = re.compile(r"\S+")
+
+    def __call__(self, text, return_offsets_mapping=False, add_special_tokens=True):
+        ids: list[int] = []
+        offsets: list[tuple[int, int]] = []
+        for i, match in enumerate(self._WORD_RE.finditer(text)):
+            ids.append(i + 1)
+            offsets.append((match.start(), match.end()))
+        out = {"input_ids": ids}
+        if return_offsets_mapping:
+            out["offset_mapping"] = offsets
+        return out
+
+
 # ---------------------------------------------------------------------------
 # pytest fixtures (used via function argument injection)
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_tokenizer(monkeypatch):
+    """Install the word-level FakeTokenizer as tokenization's cached tokenizer.
+
+    Overwrites the lazily-cached `_tokenizer` global so `_get_tokenizer()` never triggers
+    the real MiniLM download. Auto-restored to None after the test by monkeypatch.
+    """
+    from extraction.utils import tokenization
+
+    tokenizer = FakeTokenizer()
+    monkeypatch.setattr(tokenization, "_tokenizer", tokenizer)
+    return tokenizer
 
 
 @pytest.fixture

@@ -15,21 +15,31 @@ processing (chunk + embed) → Chroma → retrieval (search + re-rank + cluster)
 
 **Currently building:** the ingestion engine is complete (sources → adapters → validation →
 normalizer → quality gate → dedup → raw store, handing off `status: unprocessed` Documents).
-The processing stage (`extraction/`) is the next thing to build.
+The processing stage (`extraction/`) is underway: **Phase 1 chunking is built** (Documents →
+`Chunk`s, dispatched by `doc_type`); embedding into Chroma and enrichment are the next steps.
 
 ### Top-level layout (structure mirrors the pipeline stages)
 ```
 config/sources.json   makeshift source registry (data, not code) — read via load_sources()
 ingestion/            sources → adapters → normalizer → dedup → raw store   (active)
-extraction/           processing: chunk + embed + enrich                    (scaffold — non-goal)
+extraction/           processing: chunk (built) + embed + enrich            (chunking active)
 generation/           retrieval + synthesis                                  (scaffold — non-goal)
 source_validation/    authoring-time source onboarding/validation           (scaffold — non-goal)
 tests/                offline, fixture-based pytest suite
 ```
-`extraction/`, `generation/`, and `source_validation/` are placeholders (README + `__init__`)
-that mark future stages; only `ingestion/` is built. Shared contracts (`Document`,
-`SourceConfig`) live in `ingestion/core/` for now and will be promoted to a shared package
-when a downstream stage actually needs them.
+`generation/` and `source_validation/` are placeholders (README + `__init__`) that mark future
+stages. `extraction/` has its first stage built — **chunking** (`extraction/chunk.py`,
+`chunkers/`, `utils/`, `engine.py`); embedding + enrichment remain scaffolded. Shared contracts
+(`Document`, `SourceConfig`) live in `ingestion/core/` for now and will be promoted to a shared
+package when a downstream stage actually needs them.
+
+**Chunking (extraction Phase 1):** `engine.chunk_document(doc)` dispatches on `doc_type` via
+`chunkers/registry.py` — `article → chunk_paragraph`, `filing → chunk_section`, any other type
+→ `chunk_fixed` (fallback). Every `Chunk` carries dual spans (`full_span` for embedding/retrieval,
+`highlight_span` for the cited excerpt) plus citation provenance copied from its parent Document.
+Tokenization is centralized in `extraction/utils/tokenization.py` (lazy-loaded MiniLM, one source
+of truth — chunkers never load their own tokenizer). Chunking is pure (no I/O); reading the raw
+store and advancing `status` belongs with the later embedding stage.
 
 **Handoff boundary:** ingestion's only output is normalized, deduped `Document` rows in the
 raw store, stamped `status: "unprocessed"` (the `Document.status` default). Downstream stages
@@ -99,6 +109,16 @@ python -m ingestion.run                              # scheduled loop (Ctrl-C to
 - The `schema-guardian` agent's documented field list has drifted from `ingestion/core/document.py`
   (it says `article_id`/`fetched_date`; the code uses `id`/`fetched_at`). Code is source of truth;
   reconcile the agent doc before relying on it for reviews.
+- `requirements.txt` still contains unresolved merge-conflict markers (`<<<<<<< HEAD` … `>>>>>>> main`)
+  committed in `137bffa` — `pip install -r requirements.txt` fails as-is. Resolve toward the `main`
+  side (the full dependency set) and add `transformers` (needed by the chunking tokenizer; it also
+  arrives transitively via `sentence-transformers`). Pre-existing; not touched by the chunking work.
+- Section chunking has no real fixture yet: EDGAR discovery is metadata-only (`expects.body = false`),
+  so its Documents have empty bodies and produce no section chunks. `test_chunk_section.py` uses a
+  synthetic filing body; add a captured full-text filing fixture when a full-text source is onboarded.
+- The Phase 1 spec's *example* registry maps `news_article → chunk_fixed`, but the pipeline's actual
+  `doc_type` values are `article`/`filing`, and this project's rule is "articles by paragraph" — so
+  `article → chunk_paragraph`. Fixed-size is the fallback for unmapped/unstructured types.
 
 ## Guardrails (prefer X over Y)
 - Prefer surfacing news + sources over generating advice. No buy/sell/hold, ever.
@@ -114,7 +134,8 @@ never after. Every pipeline stage must have tests before the code ships.
 ### Structure
 ```
 tests/
-  conftest.py              # shared builders (make_document, make_source_config) + FakeResponse
+  conftest.py              # shared builders (make_document, make_source_config, make_chunk)
+                           #   + FakeResponse (network) + FakeTokenizer/fake_tokenizer (chunking)
   fixtures/                # captured payloads (raw bytes) + parsed-dict samples per source
     rss_reuters_sample.json    rest_json_sample.json   rest_json_raw.json
     sec-edgar.xml              ft-rss.xml
@@ -129,7 +150,21 @@ tests/
   test_quality_fixtures.py # gate regression: degenerate feed warns, healthy EDGAR silent
   test_transforms.py       # per-source transforms (edgar_filing_url exact URL)
   test_engine.py           # end-to-end: dedup branches, 304, transport rejection, drop-and-count
+  # --- extraction / chunking (Phase 1) ---
+  test_tokenization.py     # tokenize_document / token_spans / count_tokens contracts (fake tokenizer)
+  test_section_detection.py# detect_section_headers heuristics: all-caps / numbered / keyword vs prose
+  test_highlight.py        # select_highlight_span: first-sentence + header-skip + fallback
+  test_chunk.py            # Chunk contract: chunk_id, provenance copy, materialize_chunks offsets
+  test_chunk_fixed.py      # fixed windows: overlap, ordinals, highlight==full, ValueError guard
+  test_chunk_paragraph.py  # paragraph merge (forward + tail fold-back), first-sentence highlight
+  test_chunk_section.py    # section split, preamble, after-header highlight, oversized fallback
+  test_chunk_registry.py   # get_chunker mapping: article→paragraph, filing→section, other→fixed
+  test_chunk_engine.py     # chunk_document dispatch by doc_type; chunk_documents flatten
 ```
+
+**Chunking tests are offline via `fake_tokenizer`** (a word-level `FakeTokenizer` injected as the
+cached MiniLM tokenizer — mirrors `FakeResponse` for the adapters). Assert the *contract*
+(spans locate text, ordinals contiguous, dual-span rules), not MiniLM's specific sub-word IDs.
 
 **Fixture-regression convention:** a source's *fixture + expected `Document`s = its regression
 test*. Onboarding a source produces its test as a byproduct (capture the raw payload, assert the
