@@ -68,14 +68,10 @@ class TestIdentityKey:
         )
 
     def test_different_sources_produce_different_keys(self):
-        assert identity_key("Reuters", "article-1") != identity_key(
-            "Bloomberg", "article-1"
-        )
+        assert identity_key("Reuters", "article-1") != identity_key("Bloomberg", "article-1")
 
     def test_different_article_ids_produce_different_keys(self):
-        assert identity_key("Reuters", "article-1") != identity_key(
-            "Reuters", "article-2"
-        )
+        assert identity_key("Reuters", "article-1") != identity_key("Reuters", "article-2")
 
     def test_edgar_accession_number_as_article_id(self):
         key = identity_key("SEC EDGAR", "0001193125-24-002345")

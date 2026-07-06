@@ -4,9 +4,13 @@ The normalizer is the boundary between the adapter world (format-specific, messy
 and the pipeline world (typed, validated, canonical). It is the only place that
 produces Documents from raw input. See the contract in test_normalizer.py.
 
-Field mappings default to the common adapter output shape (url, title, raw_body,
-published, source_article_id, raw_payload) and can be overridden per-source via
-config.params (e.g. params["body_field"]) — so no per-source code branches exist.
+Every adapter (rss, rest_json) already yields the standard shape (url, title, raw_body,
+published, source_article_id, raw_payload) regardless of source — that is the point of
+being format-driven. Field-name mappings therefore default to that standard shape and
+are overridden per-source only via config.field_mappings (e.g.
+field_mappings={"body": "raw_text"}), for the rare source whose entries don't fit.
+doc_type is stamped verbatim from config.doc_type (the validated top-level field on
+SourceConfig) — never read from content.
 
 This function is pure: same input always yields the same output, no I/O, no state.
 """
@@ -25,6 +29,15 @@ from ingestion.pipeline.transforms import get_transform
 _TAG_RE = re.compile(r"<[^>]+>")
 _BLOCK_CLOSE_RE = re.compile(r"(?i)</(p|div|li|h[1-6]|section|article)>")
 _BR_RE = re.compile(r"(?i)<br\s*/?>")
+
+# Standard adapter-output key for each Document field, overridable via field_mappings.
+_DEFAULT_FIELD_KEYS = {
+    "url": "url",
+    "title": "title",
+    "body": "raw_body",
+    "published_date": "published",
+    "source_article_id": "source_article_id",
+}
 
 
 class NormalizationError(Exception):
@@ -71,14 +84,18 @@ def _parse_date(value) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _field(raw: dict, config: SourceConfig, field_name: str):
+    """Look up `field_name` in `raw` using the source's override, else the standard key."""
+    key = (config.field_mappings or {}).get(field_name, _DEFAULT_FIELD_KEYS[field_name])
+    return raw.get(key)
+
+
 def normalize(raw: dict, config: SourceConfig, fetched_at: datetime) -> Document:
     # Apply per-source transform before generic field-mapping, if one is registered.
     if config.transform:
         raw = get_transform(config.transform)(raw, config)
 
-    params = config.params or {}
-
-    url = raw.get(params.get("url_field", "url"))
+    url = _field(raw, config, "url")
     if not url:
         raise NormalizationError(f"missing url for source {config.name!r}")
     # Per-record contract: reject any URL that isn't an absolute http(s) URL (no scheme
@@ -87,11 +104,11 @@ def normalize(raw: dict, config: SourceConfig, fetched_at: datetime) -> Document
     if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
         raise NormalizationError(f"unparseable url for source {config.name!r}: {url!r}")
 
-    published_date = _parse_date(raw.get(params.get("published_field", "published")))
+    published_date = _parse_date(_field(raw, config, "published_date"))
 
-    title = raw.get(params.get("title_field", "title")) or ""
-    body = _clean_html(raw.get(params.get("body_field", "raw_body")))
-    article_id = raw.get(params.get("id_field", "source_article_id")) or url
+    title = _field(raw, config, "title") or ""
+    body = _clean_html(_field(raw, config, "body"))
+    article_id = _field(raw, config, "source_article_id") or url
     raw_payload = raw.get("raw_payload", raw)
 
     chash = content_hash(body)
@@ -107,9 +124,9 @@ def normalize(raw: dict, config: SourceConfig, fetched_at: datetime) -> Document
         published_date=published_date,
         title=title,
         body=body,
-        doc_type=params.get("doc_type", "article"),
+        doc_type=config.doc_type,  # advisory hint, stamped from config — never inferred here
         raw_payload=raw_payload,
         fetched_at=fetched_at,
-        # status is left to its default ("unprocessed") — the ingestion handoff state.
-        # The processing stage advances it; ingestion never sets it to anything else.
+        # tickers/sectors/key_points, status, document_type, validation_warnings are left
+        # to their defaults — later stages (enrichment, processing) populate them.
     )

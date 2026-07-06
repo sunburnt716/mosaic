@@ -37,9 +37,7 @@ if TYPE_CHECKING:
 
 # Source-agnostic default thresholds. Per-source SourceConfig fields override these
 # where set; left None, these defaults apply.
-DEFAULT_MAX_EMPTY_BODY_RATE = (
-    0.80  # warn if >80% of docs have empty body (when body expected)
-)
+DEFAULT_MAX_EMPTY_BODY_RATE = 0.80  # warn if >80% of docs have empty body (when body expected)
 DEFAULT_MAX_FALLBACK_TITLE_RATE = 0.50  # warn if >50% of titles are placeholders/empty
 MIN_BATCH_FOR_COLLAPSE = 5  # collapse checks need a non-trivial batch (a 1-doc batch is
 # trivially "collapsed", so guarding avoids false positives on tiny/slow-news batches)
@@ -84,9 +82,7 @@ def check(docs: list["Document"], config: "SourceConfig") -> QualityReport:
 
     # --- compute batch statistics once, reused by every flag and surfaced in the summary ---
     empty_bodies = sum(1 for d in docs if not d.body.strip())
-    fallback_titles = sum(
-        1 for d in docs if not d.title or _FALLBACK_TITLE_RE.search(d.title)
-    )
+    fallback_titles = sum(1 for d in docs if not d.title or _FALLBACK_TITLE_RE.search(d.title))
     malformed_urls = [d.url for d in docs if _BAD_URL_RE.search(d.url)]
     unique_urls = len({d.url for d in docs})
     unique_identity_keys = len({d.identity_key for d in docs})
@@ -104,9 +100,7 @@ def check(docs: list["Document"], config: "SourceConfig") -> QualityReport:
     }
 
     # --- rate flags: per-source threshold where set, else the source-agnostic default ---
-    max_fallback = _or_default(
-        config.max_fallback_title_rate, DEFAULT_MAX_FALLBACK_TITLE_RATE
-    )
+    max_fallback = _or_default(config.max_fallback_title_rate, DEFAULT_MAX_FALLBACK_TITLE_RATE)
     if fallback_title_rate > max_fallback:
         warnings.append(
             f"TITLE_FALLBACK: {fallback_titles}/{n} titles are placeholders/empty "

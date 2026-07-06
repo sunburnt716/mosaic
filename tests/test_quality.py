@@ -176,9 +176,7 @@ class TestCollapseFlags:
 class TestUrlMalformed:
     def test_list_repr_url_warns(self):
         docs = _healthy_batch(3)
-        docs[
-            0
-        ].url = "https://www.sec.gov/Archives/edgar/data/['001-39218']//-index.htm"
+        docs[0].url = "https://www.sec.gov/Archives/edgar/data/['001-39218']//-index.htm"
         assert "URL_MALFORMED" in _warnings(check(docs, _config()))
 
     def test_clean_urls_silent(self):

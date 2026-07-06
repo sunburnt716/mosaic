@@ -1,6 +1,8 @@
 # Test + lint dependencies only — kept separate from runtime requirements.txt so CI
-# can run the unit suite fast. The ingestion modules import feedparser/requests/etc.
-# lazily (inside the network methods), so unit tests need none of the heavy runtime deps.
-pytest>=8.0.0
-pytest-mock>=3.12.0
-ruff>=0.3.0
+# can run the unit suite fast. The ingestion adapters import feedparser/requests lazily
+# (inside the network-fetch methods, not at module top), so unit tests need neither —
+# confirmed by the suite passing without feedparser installed at all. Live/integration
+# runs (adapters actually fetching, real MiniLM tokenization) need requirements.txt too.
+pytest>=8.0
+pytest-mock>=3.12
+ruff>=0.3

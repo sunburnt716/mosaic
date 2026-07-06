@@ -61,11 +61,12 @@ class TestGateWarnsOnDegenerateBatch:
 
 class TestGateSilentOnHealthyEdgar:
     def test_healthy_edgar_batch_no_warnings(self, monkeypatch):
-        # EDGAR config mirrors config/sources.json: filing doc_type, transform, body not expected.
+        # EDGAR config mirrors ingestion/config/sources.yaml: filing doc_type, transform,
+        # body not expected.
         config = make_source_config(
             name="sec-edgar",
             tier=0,
-            params={"doc_type": "filing"},
+            doc_type="filing",
             transform="edgar_filing_url",
             expects={"title": True, "url": True, "body": False},
         )

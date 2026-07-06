@@ -34,9 +34,7 @@ def _leading(body: bytes) -> bytes:
     return stripped[:_SNIFF_BYTES].lower()
 
 
-def check_transport(
-    body: bytes, content_type: str | None, expected_format: str
-) -> None:
+def check_transport(body: bytes, content_type: str | None, expected_format: str) -> None:
     """Refuse an empty body or an HTML page where `expected_format` (xml|json) was wanted.
 
     Body-sniffing is primary; content-type is a secondary signal because servers mislabel

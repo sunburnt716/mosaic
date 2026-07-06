@@ -42,6 +42,4 @@ def document_id(identity_key: str, content_hash: str) -> str:
     (identity_key, content_hash) inputs can collide by concatenation ambiguity.
     Returns a 64-char lowercase hex string — safe as a Chroma document ID.
     """
-    return hashlib.sha256(
-        f"{identity_key}\x00{content_hash}".encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(f"{identity_key}\x00{content_hash}".encode()).hexdigest()

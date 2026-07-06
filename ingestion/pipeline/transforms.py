@@ -4,7 +4,7 @@ A transform takes one raw entry dict (as the adapter yielded it) plus its Source
 and returns a corrected/augmented dict whose keys match what the normalizer expects.
 Transforms are pure: no network, no disk, no clock — same input always yields same output.
 
-Register a transform with @register("name"), then reference it in config/sources.json via the
+Register a transform with @register("name"), then reference it in sources.yaml via the
 `transform:` field. The normalizer resolves and applies it automatically.
 
 Transform contract:
@@ -39,9 +39,7 @@ def register(name: str):
 def get_transform(name: str) -> Callable[[dict, "SourceConfig"], dict]:
     """Return the transform callable for `name`, or raise ValueError if unknown."""
     if name not in _REGISTRY:
-        raise ValueError(
-            f"Unknown transform {name!r}. Registered transforms: {sorted(_REGISTRY)}"
-        )
+        raise ValueError(f"Unknown transform {name!r}. Registered transforms: {sorted(_REGISTRY)}")
     return _REGISTRY[name]
 
 

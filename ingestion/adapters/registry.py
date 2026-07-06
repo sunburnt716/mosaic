@@ -1,4 +1,4 @@
-"""Adapter registry — maps the string adapter key in config/sources.json to a concrete
+"""Adapter registry — maps the string adapter key in sources.yaml to a concrete
 Adapter class.
 
 To register a new adapter:

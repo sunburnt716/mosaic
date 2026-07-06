@@ -84,14 +84,12 @@ class TestNormalizerEdgeCases:
         doc = normalize(raw, reuters_source_config, fetched_at)
         assert doc.published_date == datetime(2024, 1, 15, 14, 30, tzinfo=timezone.utc)
 
-    def test_doc_type_defaults_to_article_when_absent(self, fetched_at):
-        config = make_source_config(params={})  # no doc_type key
+    def test_doc_type_defaults_to_article_when_not_overridden(self, fetched_at):
+        config = make_source_config()  # doc_type left at its default
         doc = normalize(load_fixture("rss_reuters_sample.json"), config, fetched_at)
         assert doc.doc_type == "article"
 
-    def test_empty_body_still_produces_valid_document(
-        self, reuters_source_config, fetched_at
-    ):
+    def test_empty_body_still_produces_valid_document(self, reuters_source_config, fetched_at):
         raw = self._raw(raw_body="")
         doc = normalize(raw, reuters_source_config, fetched_at)
         assert doc.body == ""
@@ -122,9 +120,7 @@ class TestDedupPriorityEdgeCases:
             embedding=[1.0, 0.0],
         )
         incoming = make_document(content_hash="h1", identity_key="Reuters::b")
-        assert (
-            classify(incoming, store, embedding=[1.0, 0.0]) == DedupResult.L1_DUPLICATE
-        )
+        assert classify(incoming, store, embedding=[1.0, 0.0]) == DedupResult.L1_DUPLICATE
 
     def test_l2_beats_l3(self):
         # Same identity (diff hash) AND a near embedding -> L2 (identity before embedding).
@@ -164,10 +160,7 @@ class TestDedupPriorityEdgeCases:
         store.add(make_document(identity_key="A::1"), embedding=[0.0, 1.0])
         store.add(make_document(identity_key="B::2"), embedding=[1.0, 0.0])
         incoming = make_document(identity_key="C::3", content_hash="other")
-        assert (
-            classify(incoming, store, embedding=[1.0, 0.0])
-            == DedupResult.L3_NEAR_DUPLICATE
-        )
+        assert classify(incoming, store, embedding=[1.0, 0.0]) == DedupResult.L3_NEAR_DUPLICATE
 
 
 # ---------------------------------------------------------------------------
@@ -176,9 +169,7 @@ class TestDedupPriorityEdgeCases:
 
 
 class TestAdapterEdgeCases:
-    def test_empty_feed_yields_nothing_without_error(
-        self, monkeypatch, reuters_source_config
-    ):
+    def test_empty_feed_yields_nothing_without_error(self, monkeypatch, reuters_source_config):
         from ingestion.adapters.rss import RssAdapter
 
         adapter = RssAdapter()
@@ -202,9 +193,7 @@ class TestAdapterEdgeCases:
         next(gen)
         assert called["hit"] is True
 
-    def test_fetch_error_chains_original_cause(
-        self, monkeypatch, reuters_source_config
-    ):
+    def test_fetch_error_chains_original_cause(self, monkeypatch, reuters_source_config):
         from ingestion.adapters.base import FetchError
         from ingestion.adapters.rss import RssAdapter
 
@@ -218,9 +207,7 @@ class TestAdapterEdgeCases:
             list(adapter.fetch(reuters_source_config))
         assert isinstance(exc_info.value.__cause__, ConnectionError)
 
-    def test_multiple_items_each_preserve_raw_payload(
-        self, monkeypatch, reuters_source_config
-    ):
+    def test_multiple_items_each_preserve_raw_payload(self, monkeypatch, reuters_source_config):
         from ingestion.adapters.rss import RssAdapter
 
         raw_a = load_fixture("rss_reuters_sample.json")

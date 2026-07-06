@@ -30,9 +30,7 @@ from ingestion.adapters.rest_json import RestJsonAdapter
 from ingestion.adapters.rss import RssAdapter
 from tests.conftest import FakeResponse, load_fixture, make_source_config
 
-_CHALLENGE_HTML = (
-    Path(__file__).parent / "fixtures" / "challenge_page.html"
-).read_bytes()
+_CHALLENGE_HTML = (Path(__file__).parent / "fixtures" / "challenge_page.html").read_bytes()
 
 
 # A tiny valid Atom document with one entry, so feedparser yields exactly one item.
@@ -97,9 +95,7 @@ class TestRssAdapterContract:
             assert "url" in item
             assert item["url"]
 
-    def test_each_item_has_published_timestamp(
-        self, monkeypatch, reuters_source_config
-    ):
+    def test_each_item_has_published_timestamp(self, monkeypatch, reuters_source_config):
         raw = load_fixture("rss_reuters_sample.json")
         adapter = RssAdapter()
         monkeypatch.setattr(adapter, "_fetch_feed", lambda url, headers: [raw])
@@ -124,9 +120,7 @@ class TestRssAdapterContract:
             assert "raw_payload" in item
             assert isinstance(item["raw_payload"], dict)
 
-    def test_raw_payload_is_untouched_source_response(
-        self, monkeypatch, reuters_source_config
-    ):
+    def test_raw_payload_is_untouched_source_response(self, monkeypatch, reuters_source_config):
         raw = load_fixture("rss_reuters_sample.json")
         expected_payload = dict(raw["raw_payload"])
         adapter = RssAdapter()
@@ -135,23 +129,17 @@ class TestRssAdapterContract:
         for item in adapter.fetch(reuters_source_config):
             assert item["raw_payload"] == expected_payload
 
-    def test_network_failure_raises_fetch_error(
-        self, monkeypatch, reuters_source_config
-    ):
+    def test_network_failure_raises_fetch_error(self, monkeypatch, reuters_source_config):
         adapter = RssAdapter()
         monkeypatch.setattr(
             adapter,
             "_fetch_feed",
-            lambda url, headers: (_ for _ in ()).throw(
-                ConnectionError("Network unreachable")
-            ),
+            lambda url, headers: (_ for _ in ()).throw(ConnectionError("Network unreachable")),
         )
         with pytest.raises(FetchError):
             list(adapter.fetch(reuters_source_config))
 
-    def test_malformed_feed_raises_fetch_error(
-        self, monkeypatch, reuters_source_config
-    ):
+    def test_malformed_feed_raises_fetch_error(self, monkeypatch, reuters_source_config):
         def bad_feed(url, headers):
             raise ValueError("Malformed XML")
 
@@ -161,13 +149,9 @@ class TestRssAdapterContract:
             list(adapter.fetch(reuters_source_config))
 
     @pytest.mark.integration
-    @pytest.mark.skip(
-        reason="Requires live network access — run manually with -m integration"
-    )
+    @pytest.mark.skip(reason="Requires live network access — run manually with -m integration")
     def test_live_reuters_rss_feed(self):
-        config = make_source_config(
-            url="https://feeds.reuters.com/reuters/topNews", tier=1
-        )
+        config = make_source_config(url="https://feeds.reuters.com/reuters/topNews", tier=1)
         adapter = RssAdapter()
         results = list(adapter.fetch(config))
         assert len(results) > 0
@@ -234,9 +218,7 @@ class TestRssConditionalGet:
         with pytest.raises(NotModifiedSignal):
             list(adapter.fetch(reuters_source_config))
 
-    def test_200_attaches_etag_and_last_modified(
-        self, monkeypatch, reuters_source_config
-    ):
+    def test_200_attaches_etag_and_last_modified(self, monkeypatch, reuters_source_config):
         resp = FakeResponse(
             status_code=200,
             headers={
@@ -252,9 +234,7 @@ class TestRssConditionalGet:
         assert items[0]["_etag"] == '"v1-abc"'
         assert items[0]["_last_modified"] == "Wed, 01 Jan 2026 00:00:00 GMT"
 
-    def test_200_without_validators_still_works(
-        self, monkeypatch, reuters_source_config
-    ):
+    def test_200_without_validators_still_works(self, monkeypatch, reuters_source_config):
         """Conditional GET is opportunistic: no validator headers must not break fetch."""
         resp = FakeResponse(status_code=200, headers={}, content=_ATOM_ONE_ENTRY)
         monkeypatch.setattr(requests, "get", lambda *a, **k: resp)
@@ -305,9 +285,7 @@ class TestRestJsonConditionalGet:
 
 
 class TestRssTransportValidation:
-    def test_html_challenge_page_at_200_is_rejected(
-        self, monkeypatch, reuters_source_config
-    ):
+    def test_html_challenge_page_at_200_is_rejected(self, monkeypatch, reuters_source_config):
         """A 200 that returns an HTML challenge page must be refused, not parsed as a feed."""
         resp = FakeResponse(
             status_code=200,
@@ -349,9 +327,7 @@ class TestRestJsonRawParse:
     def _resp(self):
         import json
 
-        raw_bytes = (
-            Path(__file__).parent / "fixtures" / "rest_json_raw.json"
-        ).read_bytes()
+        raw_bytes = (Path(__file__).parent / "fixtures" / "rest_json_raw.json").read_bytes()
         return FakeResponse(
             status_code=200,
             headers={"Content-Type": "application/json"},

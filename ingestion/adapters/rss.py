@@ -1,9 +1,13 @@
 """Generic RSS/Atom adapter — one implementation for all RSS/Atom sources.
 
 Format-driven: per-source differences (URL, auth headers, schedule) live in
-config/sources.json, not here. The HTTP fetch + feed parse is isolated in `_fetch_feed`
+sources.yaml, not here. The HTTP fetch + feed parse is isolated in `_fetch_feed`
 so the engine can wrap it (e.g. with conditional-GET validators) and tests can
 substitute it. `fetch` only adds source-isolation error handling.
+
+Always yields the standard shape (url, title, raw_body, published, source_article_id,
+raw_payload) regardless of source — the normalizer relies on this so per-source
+field_mappings overrides are the exception, not the rule.
 """
 
 from collections.abc import Iterable
@@ -52,9 +56,7 @@ class RssAdapter(Adapter):
                 "title": entry.get("title"),
                 "raw_body": entry.get("summary") or entry.get("description") or "",
                 "published": entry.get("published") or entry.get("updated"),
-                "source_article_id": entry.get("id")
-                or entry.get("guid")
-                or entry.get("link"),
+                "source_article_id": entry.get("id") or entry.get("guid") or entry.get("link"),
                 "raw_payload": dict(entry),
                 # Validators ride along on each item; the engine pops them (last wins)
                 # and persists them to poll_state for the next conditional GET.

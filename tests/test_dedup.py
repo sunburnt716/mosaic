@@ -62,14 +62,10 @@ class MockSeenStore:
 class TestL1ExactDuplicate:
     def test_same_content_hash_is_l1(self):
         store = MockSeenStore()
-        original = make_document(
-            content_hash="hash_abc", identity_key="Reuters::article-1"
-        )
+        original = make_document(content_hash="hash_abc", identity_key="Reuters::article-1")
         store.add(original)
 
-        duplicate = make_document(
-            content_hash="hash_abc", identity_key="Reuters::article-99"
-        )
+        duplicate = make_document(content_hash="hash_abc", identity_key="Reuters::article-99")
         assert classify(duplicate, store) == DedupResult.L1_DUPLICATE
 
     def test_different_identity_key_still_l1_if_hash_matches(self):
@@ -77,22 +73,16 @@ class TestL1ExactDuplicate:
         store._hashes.add("shared_hash")
         store._identity_keys["Bloomberg::article-5"] = "shared_hash"
 
-        incoming = make_document(
-            content_hash="shared_hash", identity_key="Reuters::article-1"
-        )
+        incoming = make_document(content_hash="shared_hash", identity_key="Reuters::article-1")
         assert classify(incoming, store) == DedupResult.L1_DUPLICATE
 
     def test_l1_takes_priority_over_l2(self):
         # Same identity key AND same content hash → L1 wins (content unchanged, not an update)
         store = MockSeenStore()
-        original = make_document(
-            content_hash="hash_xyz", identity_key="Reuters::article-1"
-        )
+        original = make_document(content_hash="hash_xyz", identity_key="Reuters::article-1")
         store.add(original)
 
-        same_everything = make_document(
-            content_hash="hash_xyz", identity_key="Reuters::article-1"
-        )
+        same_everything = make_document(content_hash="hash_xyz", identity_key="Reuters::article-1")
         assert classify(same_everything, store) == DedupResult.L1_DUPLICATE
 
     def test_unseen_hash_is_not_l1(self):
@@ -111,9 +101,7 @@ class TestL1ExactDuplicate:
 class TestL2UpdatedArticle:
     def test_same_identity_key_different_hash_is_l2(self):
         store = MockSeenStore()
-        original = make_document(
-            content_hash="hash_v1", identity_key="Reuters::article-1"
-        )
+        original = make_document(content_hash="hash_v1", identity_key="Reuters::article-1")
         store.add(original)
 
         updated = make_document(
@@ -125,14 +113,10 @@ class TestL2UpdatedArticle:
 
     def test_different_identity_key_is_not_l2(self):
         store = MockSeenStore()
-        original = make_document(
-            content_hash="hash_v1", identity_key="Reuters::article-1"
-        )
+        original = make_document(content_hash="hash_v1", identity_key="Reuters::article-1")
         store.add(original)
 
-        unrelated = make_document(
-            content_hash="hash_v2", identity_key="Reuters::article-2"
-        )
+        unrelated = make_document(content_hash="hash_v2", identity_key="Reuters::article-2")
         assert classify(unrelated, store) != DedupResult.L2_UPDATE
 
     def test_l2_result_means_article_was_updated_not_duplicated(self):
@@ -194,9 +178,7 @@ class TestL3NearDuplicate:
             embedding=[1.0, 0.0, 0.0],
         )
 
-        incoming = make_document(
-            content_hash="hash_B", identity_key="Reuters::article-2"
-        )
+        incoming = make_document(content_hash="hash_B", identity_key="Reuters::article-2")
         result = classify(incoming, store, embedding=[1.0, 0.0, 0.0])
         assert result == DedupResult.L3_NEAR_DUPLICATE
         assert result != DedupResult.L1_DUPLICATE
@@ -237,9 +219,7 @@ class TestNewDocument:
 
     def test_unseen_hash_and_unseen_identity_key_is_new(self):
         store = MockSeenStore()
-        store.add(
-            make_document(content_hash="old_hash", identity_key="Reuters::old-article")
-        )
+        store.add(make_document(content_hash="old_hash", identity_key="Reuters::old-article"))
 
         incoming = make_document(
             content_hash="brand_new_hash",

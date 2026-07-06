@@ -140,8 +140,8 @@ class TestEdgarFixtureRoundtrip:
 
         import feedparser
 
-        from ingestion.core.source_config import SourceConfig
         from ingestion.pipeline.normalizer import normalize
+        from tests.conftest import make_source_config
 
         fixture = (Path(__file__).parent / "fixtures" / "sec-edgar.xml").read_bytes()
         parsed = feedparser.parse(fixture)
@@ -159,12 +159,12 @@ class TestEdgarFixtureRoundtrip:
             "raw_payload": dict(entry),
         }
 
-        config = SourceConfig(
+        config = make_source_config(
             name="sec-edgar",
             adapter="rss",
             tier=0,
             url="https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&output=atom",
-            params={"doc_type": "filing"},
+            doc_type="filing",
             transform="edgar_filing_url",
             expects={"title": True, "url": True, "body": False},
         )
@@ -204,8 +204,8 @@ class TestEdgarFixtureRoundtrip:
 
         import feedparser
 
-        from ingestion.core.source_config import SourceConfig
         from ingestion.pipeline.normalizer import normalize
+        from tests.conftest import make_source_config
 
         fixture = (Path(__file__).parent / "fixtures" / "sec-edgar.xml").read_bytes()
         entry = feedparser.parse(fixture).entries[0]
@@ -217,12 +217,12 @@ class TestEdgarFixtureRoundtrip:
             "source_article_id": entry.get("id") or entry.get("link"),
             "raw_payload": dict(entry),
         }
-        config = SourceConfig(
+        config = make_source_config(
             name="sec-edgar",
             adapter="rss",
             tier=0,
             url="https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&output=atom",
-            params={"doc_type": "filing"},
+            doc_type="filing",
             transform="edgar_filing_url",
         )
         doc = normalize(raw, config, fetched_at)

@@ -1,15 +1,27 @@
-"""Tests for ingestion/engine.py.
+"""Tests for ingestion/engine.py — ConcreteEngine.
 
-Tests the four dedup branches, source isolation, 304 short-circuit, and the
-poll-state update contract. All storage uses in-memory SQLite; network calls are
-monkeypatched at the adapter's _fetch_feed/_fetch_json boundary.
+ConcreteEngine.process_source(source) handles exactly ONE source and returns None (the
+Engine Protocol contract); it never loops over multiple sources and never checks
+`enabled`. Multi-source dispatch, disabled-source skipping, and per-source failure
+isolation across a whole tick are the scheduler's job and are already covered in
+test_run.py's TestTick (via a StubEngine). This file covers what ConcreteEngine itself
+does for one source: the four dedup branches, the 304 short-circuit, fail-closed
+transport rejection, per-record drop-and-count, and the poll-state update contract.
+
+All storage uses in-memory SQLite; network calls are monkeypatched at the adapter's
+_fetch_feed boundary. Since process_source returns None, outcomes are observed through
+the stores' state after the call (and, where useful, through caplog).
 """
+
+import logging
+from datetime import datetime, timezone
 
 import pytest
 
 from ingestion.adapters.base import NotModifiedSignal, TransportError
 from ingestion.adapters.rss import RssAdapter
-from ingestion.engine import EngineResult, SourceResult, run
+from ingestion.engine import ConcreteEngine
+from ingestion.pipeline.normalizer import normalize
 from ingestion.storage.poll_state import PollStateStore
 from ingestion.storage.raw_store import RawStore
 from ingestion.storage.seen_store import SeenStore
@@ -21,14 +33,19 @@ from tests.conftest import load_fixture, make_source_config
 
 
 @pytest.fixture
-def stores():
+def stores(tmp_path):
     seen = SeenStore(":memory:")
     raw = RawStore(":memory:")
-    poll = PollStateStore(":memory:")
+    poll = PollStateStore(tmp_path / "poll_state.json")
     yield seen, raw, poll
     seen.close()
     raw.close()
-    poll.close()
+
+
+@pytest.fixture
+def engine(stores):
+    seen, raw, poll = stores
+    return ConcreteEngine(raw, seen, poll)
 
 
 @pytest.fixture
@@ -41,191 +58,125 @@ def _patch_rss(monkeypatch, items):
     monkeypatch.setattr(RssAdapter, "_fetch_feed", lambda self, url, headers: items)
 
 
+def _patch_rss_raises(monkeypatch, exc: Exception):
+    def _raise(self, url, headers):
+        raise exc
+
+    monkeypatch.setattr(RssAdapter, "_fetch_feed", _raise)
+
+
 # ---------------------------------------------------------------------------
 # Happy path — NEW document ingested end-to-end
 # ---------------------------------------------------------------------------
 
 
 class TestEngineNewDocument:
-    def test_new_doc_counted(self, monkeypatch, stores, rss_config):
+    def test_new_doc_saved_to_raw_store(self, monkeypatch, stores, engine, rss_config):
+        seen, raw, poll = stores
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+        engine.process_source(rss_config)
+
+        doc = normalize(item, rss_config, datetime.now(timezone.utc))
+        assert raw.get_document(doc.id) is not None
+
+    def test_new_doc_registered_in_seen_store(self, monkeypatch, stores, engine, rss_config):
+        seen, raw, poll = stores
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+        engine.process_source(rss_config)
+
+        ikey = f"{rss_config.name}::{item['source_article_id']}"
+        stored_hash = seen.get_hash(ikey)
+        assert stored_hash is not None
+        assert seen.contains_hash(stored_hash)
+
+    def test_poll_state_updated_after_run(self, monkeypatch, stores, engine, rss_config):
         seen, raw, poll = stores
         _patch_rss(monkeypatch, [load_fixture("rss_reuters_sample.json")])
-        result = run([rss_config], raw, seen, poll)
-        assert result.sources[0].new == 1
-        assert result.sources[0].l1_duplicate == 0
-
-    def test_new_doc_saved_to_raw_store(self, monkeypatch, stores, rss_config):
-        seen, raw, poll = stores
-        raw_item = load_fixture("rss_reuters_sample.json")
-        _patch_rss(monkeypatch, [raw_item])
-        run([rss_config], raw, seen, poll)
-        # At least one document should be in the store
-        seen_hash = seen.get_hash(f"{rss_config.name}::{raw_item['source_article_id']}")
-        assert seen_hash is not None
-
-    def test_new_doc_registered_in_seen_store(self, monkeypatch, stores, rss_config):
-        seen, raw, poll = stores
-        _patch_rss(monkeypatch, [load_fixture("rss_reuters_sample.json")])
-        run([rss_config], raw, seen, poll)
-        # The seen store must have at least one entry after ingesting a new document.
-        assert seen.contains_hash(
-            seen.get_hash(
-                f"{rss_config.name}::{load_fixture('rss_reuters_sample.json')['source_article_id']}"
-            )
-        )
-
-    def test_poll_state_updated_after_run(self, monkeypatch, stores, rss_config):
-        seen, raw, poll = stores
-        _patch_rss(monkeypatch, [load_fixture("rss_reuters_sample.json")])
-        run([rss_config], raw, seen, poll)
+        engine.process_source(rss_config)
         state = poll.get(rss_config.name)
         assert state.last_polled_at is not None
 
 
 # ---------------------------------------------------------------------------
-# L1 — Exact duplicate: second run produces 0 new
+# L1 — Exact duplicate: second call produces no new save
 # ---------------------------------------------------------------------------
 
 
 class TestEngineL1Duplicate:
-    def test_second_run_is_l1(self, monkeypatch, stores, rss_config):
+    def test_second_call_does_not_duplicate_seen_entry(
+        self, monkeypatch, stores, engine, rss_config
+    ):
         seen, raw, poll = stores
         item = load_fixture("rss_reuters_sample.json")
         _patch_rss(monkeypatch, [item])
-        run([rss_config], raw, seen, poll)  # first run: NEW
-        result2 = run([rss_config], raw, seen, poll)  # second run: L1
-        assert result2.sources[0].new == 0
-        assert result2.sources[0].l1_duplicate == 1
+        engine.process_source(rss_config)  # first call: NEW
+        engine.process_source(rss_config)  # second call: L1 — no error, no change
 
-    def test_l1_does_not_overwrite_raw_payload(self, monkeypatch, stores, rss_config):
+        ikey = f"{rss_config.name}::{item['source_article_id']}"
+        # Still exactly the original hash; an L1 duplicate never rewrites the seen entry.
+        doc = normalize(item, rss_config, datetime.now(timezone.utc))
+        assert seen.get_hash(ikey) == doc.content_hash
+
+    def test_l1_does_not_overwrite_raw_payload(self, monkeypatch, stores, engine, rss_config):
         seen, raw, poll = stores
         item = load_fixture("rss_reuters_sample.json")
         _patch_rss(monkeypatch, [item])
-        run([rss_config], raw, seen, poll)
+        engine.process_source(rss_config)
+
         # Tamper the fixture — but the raw_store should still hold the original.
         tampered = dict(item)
         tampered["raw_payload"] = {"tampered": True}
         _patch_rss(monkeypatch, [tampered])
-        run([rss_config], raw, seen, poll)
-        # get_raw uses doc_id which is derived from content; same content → same id
-        # The raw payload should match the FIRST ingest (INSERT OR IGNORE).
-        from datetime import datetime, timezone
+        engine.process_source(rss_config)
 
-        from ingestion.pipeline.normalizer import normalize
-
+        # get_raw uses doc_id which is derived from content; same content -> same id.
         doc = normalize(item, rss_config, datetime.now(timezone.utc))
         stored_raw = raw.get_raw(doc.id)
         assert stored_raw == item["raw_payload"]
 
 
 # ---------------------------------------------------------------------------
-# L2 — Updated article: second run with changed body
+# L2 — Updated article: second call with changed body
 # ---------------------------------------------------------------------------
 
 
 class TestEngineL2Update:
-    def test_l2_update_counted(self, monkeypatch, stores, rss_config):
+    def test_l2_update_overwrites_document(self, monkeypatch, stores, engine, rss_config):
         seen, raw, poll = stores
         item_v1 = load_fixture("rss_reuters_sample.json")
         _patch_rss(monkeypatch, [item_v1])
-        run([rss_config], raw, seen, poll)
+        engine.process_source(rss_config)
 
-        # Same source_article_id (same identity_key) but different body → L2
-        item_v2 = dict(item_v1)
-        item_v2["raw_body"] = "<p>Updated: Fed cuts rates by 50bps instead.</p>"
-        item_v2["raw_payload"] = dict(item_v1["raw_payload"])
-        _patch_rss(monkeypatch, [item_v2])
-        result2 = run([rss_config], raw, seen, poll)
-        assert result2.sources[0].l2_update == 1
-        assert result2.sources[0].new == 0
-
-    def test_l2_update_overwrites_document(self, monkeypatch, stores, rss_config):
-        seen, raw, poll = stores
-        item_v1 = load_fixture("rss_reuters_sample.json")
-        _patch_rss(monkeypatch, [item_v1])
-        run([rss_config], raw, seen, poll)
-
+        # Same source_article_id (same identity_key) but different body -> L2.
         item_v2 = dict(item_v1)
         item_v2["raw_body"] = "<p>Updated: Fed cuts rates by 50bps.</p>"
         item_v2["title"] = "UPDATED: Fed cuts rates"
         item_v2["raw_payload"] = dict(item_v1["raw_payload"])
         _patch_rss(monkeypatch, [item_v2])
-        run([rss_config], raw, seen, poll)
-
-        # The document in the store should reflect the updated title.
-        from datetime import datetime, timezone
-
-        from ingestion.pipeline.normalizer import normalize
+        engine.process_source(rss_config)
 
         doc_v2 = normalize(item_v2, rss_config, datetime.now(timezone.utc))
         stored = raw.get_document(doc_v2.id)
         assert stored is not None
         assert stored.title == "UPDATED: Fed cuts rates"
 
-
-# ---------------------------------------------------------------------------
-# Source isolation — FetchError in one source doesn't abort others
-# ---------------------------------------------------------------------------
-
-
-class TestEngineSourceIsolation:
-    def test_fetch_error_counted_not_raised(self, monkeypatch, stores):
+    def test_l2_update_registers_new_hash(self, monkeypatch, stores, engine, rss_config):
         seen, raw, poll = stores
-        bad_config = make_source_config(name="bad-source", adapter="rss", tier=1)
+        item_v1 = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item_v1])
+        engine.process_source(rss_config)
 
-        def boom(self, url, headers):
-            raise ConnectionError("DNS failure")
+        item_v2 = dict(item_v1)
+        item_v2["raw_body"] = "<p>Updated: Fed cuts rates by 50bps instead.</p>"
+        item_v2["raw_payload"] = dict(item_v1["raw_payload"])
+        _patch_rss(monkeypatch, [item_v2])
+        engine.process_source(rss_config)
 
-        monkeypatch.setattr(RssAdapter, "_fetch_feed", boom)
-        result = run([bad_config], raw, seen, poll)
-        assert result.sources[0].errors == 1
-        assert result.total_errors == 1
-
-    def test_good_source_still_runs_after_bad_source(self, monkeypatch, stores):
-        seen, raw, poll = stores
-        bad_config = make_source_config(
-            name="bad-source",
-            adapter="rss",
-            tier=1,
-            url="https://feeds.bad-source.example/rss",
-        )
-        good_config = make_source_config(
-            name="good-source",
-            adapter="rss",
-            tier=1,
-            url="https://feeds.good-source.example/rss",
-        )
-
-        good_item = load_fixture("rss_reuters_sample.json")
-
-        def selective_fetch(self, url, headers):
-            if "bad-source" in url:
-                raise ConnectionError("DNS failure")
-            return [good_item]
-
-        monkeypatch.setattr(RssAdapter, "_fetch_feed", selective_fetch)
-        result = run([bad_config, good_config], raw, seen, poll)
-
-        bad_src = next(s for s in result.sources if s.source_name == "bad-source")
-        good_src = next(s for s in result.sources if s.source_name == "good-source")
-        assert bad_src.errors == 1
-        assert good_src.new == 1
-
-    def test_disabled_source_is_skipped(self, monkeypatch, stores):
-        seen, raw, poll = stores
-        disabled = make_source_config(
-            name="disabled", adapter="rss", tier=1, enabled=False
-        )
-        called = {"hit": False}
-
-        def spy(self, url, headers):
-            called["hit"] = True
-            return []
-
-        monkeypatch.setattr(RssAdapter, "_fetch_feed", spy)
-        result = run([disabled], raw, seen, poll)
-        assert called["hit"] is False
-        assert result.sources == []
+        doc_v2 = normalize(item_v2, rss_config, datetime.now(timezone.utc))
+        ikey = f"{rss_config.name}::{item_v1['source_article_id']}"
+        assert seen.get_hash(ikey) == doc_v2.content_hash
 
 
 # ---------------------------------------------------------------------------
@@ -234,110 +185,93 @@ class TestEngineSourceIsolation:
 
 
 class TestEngine304ShortCircuit:
-    def test_304_increments_skipped_304(self, monkeypatch, stores, rss_config):
+    def test_304_does_not_raise(self, monkeypatch, engine, rss_config):
+        _patch_rss_raises(monkeypatch, NotModifiedSignal("304"))
+        engine.process_source(rss_config)  # must not raise
+
+    def test_304_updates_poll_state(self, monkeypatch, stores, engine, rss_config):
         seen, raw, poll = stores
-
-        def raise_304(self, url, headers):
-            raise NotModifiedSignal("304")
-
-        monkeypatch.setattr(RssAdapter, "_fetch_feed", raise_304)
-        result = run([rss_config], raw, seen, poll)
-        assert result.sources[0].skipped_304 is True
-        assert result.sources[0].fetched == 0
-
-    def test_304_updates_poll_state(self, monkeypatch, stores, rss_config):
-        seen, raw, poll = stores
-
-        def raise_304(self, url, headers):
-            raise NotModifiedSignal("304")
-
-        monkeypatch.setattr(RssAdapter, "_fetch_feed", raise_304)
-        run([rss_config], raw, seen, poll)
+        _patch_rss_raises(monkeypatch, NotModifiedSignal("304"))
+        engine.process_source(rss_config)
         state = poll.get(rss_config.name)
         assert state.last_polled_at is not None
 
-    def test_304_does_not_write_to_stores(self, monkeypatch, stores, rss_config):
+    def test_304_preserves_previous_validators(self, monkeypatch, stores, engine, rss_config):
         seen, raw, poll = stores
+        # A prior successful poll recorded validators.
+        resp_item = load_fixture("rss_reuters_sample.json")
+        resp_item["_etag"] = '"v1"'
+        _patch_rss(monkeypatch, [resp_item])
+        engine.process_source(rss_config)
+        assert poll.get(rss_config.name).etag == '"v1"'
 
-        def raise_304(self, url, headers):
-            raise NotModifiedSignal("304")
+        # A 304 on the next poll must not clear the stored etag.
+        _patch_rss_raises(monkeypatch, NotModifiedSignal("304"))
+        engine.process_source(rss_config)
+        assert poll.get(rss_config.name).etag == '"v1"'
 
-        monkeypatch.setattr(RssAdapter, "_fetch_feed", raise_304)
-        run([rss_config], raw, seen, poll)
+    def test_304_does_not_write_to_stores(self, monkeypatch, stores, engine, rss_config):
+        seen, raw, poll = stores
+        _patch_rss_raises(monkeypatch, NotModifiedSignal("304"))
+        engine.process_source(rss_config)
         assert raw.get_document("anything") is None
 
 
 # ---------------------------------------------------------------------------
-# EngineResult aggregation
+# Fetch failure — logged and swallowed, never raised (source isolation is tick()'s job)
 # ---------------------------------------------------------------------------
 
 
-class TestEngineResult:
-    def test_total_new_sums_across_sources(self):
-        result = EngineResult(
-            sources=[
-                SourceResult("a", new=3),
-                SourceResult("b", new=2),
-            ]
-        )
-        assert result.total_new == 5
+class TestEngineFetchFailure:
+    def test_fetch_error_does_not_raise(self, monkeypatch, engine, rss_config):
+        _patch_rss_raises(monkeypatch, ConnectionError("DNS failure"))
+        engine.process_source(rss_config)  # must not raise
 
-    def test_total_errors_sums_across_sources(self):
-        result = EngineResult(
-            sources=[
-                SourceResult("a", errors=1),
-                SourceResult("b", errors=2),
-            ]
-        )
-        assert result.total_errors == 3
+    def test_fetch_error_still_touches_poll_state(self, monkeypatch, stores, engine, rss_config):
+        seen, raw, poll = stores
+        _patch_rss_raises(monkeypatch, ConnectionError("DNS failure"))
+        engine.process_source(rss_config)
+        assert poll.get(rss_config.name).last_polled_at is not None
+
+    def test_fetch_error_is_logged(self, monkeypatch, engine, rss_config, caplog):
+        _patch_rss_raises(monkeypatch, ConnectionError("DNS failure"))
+        with caplog.at_level(logging.ERROR):
+            engine.process_source(rss_config)
+        assert any("FetchError" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 — fail-closed transport rejection (whole batch refused)
+# Fail-closed transport rejection (whole batch refused)
 # ---------------------------------------------------------------------------
 
 
 class TestEngineTransportRejection:
-    def test_transport_error_flags_rejected_and_writes_nothing(
-        self, monkeypatch, stores, rss_config
-    ):
+    def test_transport_error_writes_nothing(self, monkeypatch, stores, engine, rss_config):
         seen, raw, poll = stores
+        _patch_rss_raises(monkeypatch, TransportError("HTML challenge page"))
+        engine.process_source(rss_config)
+        assert raw.get_document("anything") is None
 
-        def reject(self, url, headers):
-            raise TransportError("HTML challenge page where feed expected")
-
-        monkeypatch.setattr(RssAdapter, "_fetch_feed", reject)
-        result = run([rss_config], raw, seen, poll)
-
-        src = result.sources[0]
-        assert src.rejected_transport is True
-        assert src.errors == 1
-        assert src.new == 0
-        assert raw.get_document("anything") is None  # nothing reached the store
+    def test_transport_rejection_does_not_raise(self, monkeypatch, engine, rss_config):
+        _patch_rss_raises(monkeypatch, TransportError("HTML challenge page"))
+        engine.process_source(rss_config)  # must not raise
 
     def test_transport_rejection_still_touches_poll_state(
-        self, monkeypatch, stores, rss_config
+        self, monkeypatch, stores, engine, rss_config
     ):
         seen, raw, poll = stores
-
-        monkeypatch.setattr(
-            RssAdapter,
-            "_fetch_feed",
-            lambda self, url, headers: (_ for _ in ()).throw(TransportError("bad")),
-        )
-        run([rss_config], raw, seen, poll)
+        _patch_rss_raises(monkeypatch, TransportError("bad"))
+        engine.process_source(rss_config)
         assert poll.get(rss_config.name).last_polled_at is not None
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 — per-record contract: drop the bad record, keep the batch
+# Per-record contract: drop the bad record, keep the batch
 # ---------------------------------------------------------------------------
 
 
 class TestEnginePerRecordDrop:
-    def test_bad_record_dropped_good_records_kept(
-        self, monkeypatch, stores, rss_config
-    ):
+    def test_bad_record_dropped_good_record_kept(self, monkeypatch, stores, engine, rss_config):
         seen, raw, poll = stores
         good = load_fixture("rss_reuters_sample.json")
         bad = dict(good)
@@ -346,15 +280,16 @@ class TestEnginePerRecordDrop:
         bad["source_article_id"] = "bad-1"
 
         _patch_rss(monkeypatch, [good, bad])
-        result = run([rss_config], raw, seen, poll)
+        engine.process_source(rss_config)  # must not raise despite the bad record
 
-        src = result.sources[0]
-        assert src.fetched == 2
-        assert src.new == 1  # only the good record ingested
-        assert src.dropped_records == 1
-        assert src.errors == 0  # a dropped record is not a source-level error
+        good_doc = normalize(good, rss_config, datetime.now(timezone.utc))
+        assert raw.get_document(good_doc.id) is not None
+        # The bad record's identity_key must never reach the seen store.
+        assert seen.get_hash(f"{rss_config.name}::bad-1") is None
 
-    def test_malformed_url_record_is_dropped(self, monkeypatch, stores, rss_config):
+    def test_malformed_url_record_is_dropped_good_kept(
+        self, monkeypatch, stores, engine, rss_config
+    ):
         seen, raw, poll = stores
         good = load_fixture("rss_reuters_sample.json")
         bad = dict(good)
@@ -363,7 +298,8 @@ class TestEnginePerRecordDrop:
         bad["source_article_id"] = "bad-2"
 
         _patch_rss(monkeypatch, [bad, good])
-        result = run([rss_config], raw, seen, poll)
+        engine.process_source(rss_config)
 
-        assert result.sources[0].dropped_records == 1
-        assert result.sources[0].new == 1
+        good_doc = normalize(good, rss_config, datetime.now(timezone.utc))
+        assert raw.get_document(good_doc.id) is not None
+        assert seen.get_hash(f"{rss_config.name}::bad-2") is None

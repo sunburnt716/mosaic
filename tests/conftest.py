@@ -5,7 +5,7 @@ Builders use sane defaults so individual tests only override what they care abou
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -59,17 +59,20 @@ def make_source_config(
     adapter: str = "rss",
     tier: int = 1,
     url: str = "https://feeds.reuters.com/reuters/topNews",
+    poll_interval: timedelta = timedelta(minutes=5),
+    doc_type: str = "article",
+    field_mappings: dict | None = None,
+    auth: dict | None = None,
     enabled: bool = True,
     params: dict | None = None,
     headers: dict | None = None,
-    doc_type: str = "article",
     transform: str | None = None,
     expects: dict | None = None,
     max_fallback_title_rate: float | None = None,
     max_empty_body_rate: float | None = None,
     min_records: int | None = None,
 ):
-    """Build a SourceConfig for use in tests without touching config/sources.json."""
+    """Build a SourceConfig for use in tests without touching ingestion/config/sources.yaml."""
     from ingestion.core.source_config import SourceConfig
 
     return SourceConfig(
@@ -77,8 +80,12 @@ def make_source_config(
         adapter=adapter,
         tier=tier,
         url=url,
+        poll_interval=poll_interval,
+        doc_type=doc_type,
+        field_mappings=field_mappings if field_mappings is not None else {},
+        auth=auth or {},
         enabled=enabled,
-        params=params if params is not None else {"doc_type": doc_type},
+        params=params or {},
         headers=headers or {},
         transform=transform,
         expects=expects or {},
@@ -105,6 +112,8 @@ def make_document(
     sectors: list | None = None,
     key_points: list | None = None,
     status: str = "unprocessed",
+    document_type: str | None = None,
+    validation_warnings: list | None = None,
 ):
     """Build a fully-populated Document for use in tests."""
     from ingestion.core.document import Document
@@ -116,8 +125,7 @@ def make_document(
         source_name=source_name,
         url=url,
         tier=tier,
-        published_date=published_date
-        or datetime(2024, 1, 15, 14, 30, tzinfo=timezone.utc),
+        published_date=published_date or datetime(2024, 1, 15, 14, 30, tzinfo=timezone.utc),
         title=title,
         body=body,
         doc_type=doc_type,
@@ -127,6 +135,8 @@ def make_document(
         sectors=sectors or [],
         key_points=key_points or [],
         status=status,
+        document_type=document_type,
+        validation_warnings=validation_warnings or [],
     )
 
 

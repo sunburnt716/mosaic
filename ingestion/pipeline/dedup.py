@@ -51,10 +51,7 @@ def classify(doc, seen_store, embedding=None) -> DedupResult:
     # L3 — no identity match, but semantically near an existing doc: cross-outlet story.
     if embedding is not None:
         for _doc_id, stored_embedding in seen_store.get_embeddings():
-            if (
-                _cosine_similarity(embedding, stored_embedding)
-                >= L3_SIMILARITY_THRESHOLD
-            ):
+            if _cosine_similarity(embedding, stored_embedding) >= L3_SIMILARITY_THRESHOLD:
                 return DedupResult.L3_NEAR_DUPLICATE
 
     return DedupResult.NEW

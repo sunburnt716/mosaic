@@ -1,13 +1,12 @@
-"""Tests for ingestion/storage/{seen_store,raw_store,poll_state}.py.
+"""Tests for ingestion/storage/{seen_store,raw_store}.py.
 
-All tests use in-memory SQLite (:memory:) so they are fast and leave no files on disk.
+PollStateStore/PollState are covered separately in test_poll_state.py (their own,
+richer API — this file only covers the two dedup-adjacent stores). All tests use
+in-memory SQLite (:memory:) so they are fast and leave no files on disk.
 """
-
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from ingestion.storage.poll_state import PollState, PollStateStore
 from ingestion.storage.raw_store import RawStore
 from ingestion.storage.seen_store import SeenStore
 from tests.conftest import make_document
@@ -121,98 +120,3 @@ class TestRawStore:
         store.save_document(doc)
         assert store.get_raw(doc.id) == {"raw": True}
         assert store.get_document(doc.id).id == doc.id
-
-
-# ---------------------------------------------------------------------------
-# PollStateStore
-# ---------------------------------------------------------------------------
-
-
-class TestPollStateStore:
-    @pytest.fixture
-    def store(self):
-        s = PollStateStore(":memory:")
-        yield s
-        s.close()
-
-    def test_get_returns_blank_state_for_unknown_source(self, store):
-        state = store.get("unknown-source")
-        assert isinstance(state, PollState)
-        assert state.last_polled_at is None
-        assert state.etag is None
-        assert state.last_modified is None
-
-    def test_touch_sets_last_polled_at(self, store):
-        store.touch("reuters-rss")
-        state = store.get("reuters-rss")
-        assert state.last_polled_at is not None
-
-    def test_touch_does_not_overwrite_validators(self, store):
-        store.update(
-            "reuters-rss", etag='"abc"', last_modified="Mon, 15 Jan 2024 14:30:00 GMT"
-        )
-        store.touch("reuters-rss")
-        state = store.get("reuters-rss")
-        assert state.etag == '"abc"'
-
-    def test_update_stores_validators(self, store):
-        store.update(
-            "reuters-rss",
-            etag='"abc123"',
-            last_modified="Mon, 15 Jan 2024 14:30:00 GMT",
-        )
-        state = store.get("reuters-rss")
-        assert state.etag == '"abc123"'
-        assert state.last_modified == "Mon, 15 Jan 2024 14:30:00 GMT"
-        assert state.etag_cached_at is not None
-
-    def test_update_resets_etag_cached_at(self, store):
-        store.update("reuters-rss", etag='"v1"', last_modified=None)
-        t1 = store.get("reuters-rss").etag_cached_at
-        store.update("reuters-rss", etag='"v2"', last_modified=None)
-        t2 = store.get("reuters-rss").etag_cached_at
-        assert t2 >= t1
-
-    def test_validators_fresh_within_24h(self, store):
-        store.update("reuters-rss", etag='"abc"', last_modified=None)
-        state = store.get("reuters-rss")
-        assert state.validators_fresh() is True
-
-    def test_validators_not_fresh_after_24h(self):
-        state = PollState(
-            source_name="reuters-rss",
-            last_polled_at=None,
-            etag='"abc"',
-            last_modified=None,
-            etag_cached_at=datetime.now(timezone.utc) - timedelta(hours=25),
-        )
-        assert state.validators_fresh() is False
-
-    def test_validators_not_fresh_when_never_set(self):
-        state = PollState("source", None, None, None, None)
-        assert state.validators_fresh() is False
-
-    def test_conditional_headers_empty_when_stale(self):
-        state = PollState(
-            source_name="reuters-rss",
-            last_polled_at=None,
-            etag='"abc"',
-            last_modified="Mon, 15 Jan 2024 14:30:00 GMT",
-            etag_cached_at=datetime.now(timezone.utc) - timedelta(hours=25),
-        )
-        assert state.conditional_headers() == {}
-
-    def test_conditional_headers_set_when_fresh(self, store):
-        store.update(
-            "reuters-rss", etag='"abc"', last_modified="Mon, 15 Jan 2024 14:30:00 GMT"
-        )
-        state = store.get("reuters-rss")
-        headers = state.conditional_headers()
-        assert headers.get("If-None-Match") == '"abc"'
-        assert "If-Modified-Since" in headers
-
-    def test_update_with_none_validators_clears_them(self, store):
-        store.update("reuters-rss", etag='"v1"', last_modified="some-date")
-        store.update("reuters-rss", etag=None, last_modified=None)
-        state = store.get("reuters-rss")
-        assert state.etag is None

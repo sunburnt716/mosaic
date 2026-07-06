@@ -36,21 +36,15 @@ class TestNormalizerHappyPath:
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert doc.source_name == reuters_source_config.name
 
-    def test_tier_stamped_from_config(
-        self, reuters_rss_raw, reuters_source_config, fetched_at
-    ):
+    def test_tier_stamped_from_config(self, reuters_rss_raw, reuters_source_config, fetched_at):
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert doc.tier == reuters_source_config.tier
 
-    def test_fetched_at_preserved(
-        self, reuters_rss_raw, reuters_source_config, fetched_at
-    ):
+    def test_fetched_at_preserved(self, reuters_rss_raw, reuters_source_config, fetched_at):
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert doc.fetched_at == fetched_at
 
-    def test_doc_type_article_from_config(
-        self, reuters_rss_raw, reuters_source_config, fetched_at
-    ):
+    def test_doc_type_article_from_config(self, reuters_rss_raw, reuters_source_config, fetched_at):
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert doc.doc_type == "article"
 
@@ -62,9 +56,7 @@ class TestNormalizerHappyPath:
 
 
 class TestBodyCleaning:
-    def test_html_tags_stripped_from_body(
-        self, reuters_rss_raw, reuters_source_config, fetched_at
-    ):
+    def test_html_tags_stripped_from_body(self, reuters_rss_raw, reuters_source_config, fetched_at):
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert "<" not in doc.body
         assert ">" not in doc.body
@@ -75,9 +67,7 @@ class TestBodyCleaning:
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert "Federal Reserve" in doc.body
 
-    def test_rest_json_html_stripped(
-        self, rest_json_raw, reuters_source_config, fetched_at
-    ):
+    def test_rest_json_html_stripped(self, rest_json_raw, reuters_source_config, fetched_at):
         doc = normalize(rest_json_raw, reuters_source_config, fetched_at)
         assert "<div" not in doc.body
         assert "class=" not in doc.body
@@ -85,23 +75,15 @@ class TestBodyCleaning:
 
 
 class TestPublishedDateCoercion:
-    def test_rfc2822_date_parsed_to_utc(
-        self, reuters_rss_raw, reuters_source_config, fetched_at
-    ):
+    def test_rfc2822_date_parsed_to_utc(self, reuters_rss_raw, reuters_source_config, fetched_at):
         # RSS uses RFC 2822: "Mon, 15 Jan 2024 14:30:00 GMT"
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
-        assert doc.published_date == datetime(
-            2024, 1, 15, 14, 30, 0, tzinfo=timezone.utc
-        )
+        assert doc.published_date == datetime(2024, 1, 15, 14, 30, 0, tzinfo=timezone.utc)
 
-    def test_iso8601_date_parsed_to_utc(
-        self, rest_json_raw, reuters_source_config, fetched_at
-    ):
+    def test_iso8601_date_parsed_to_utc(self, rest_json_raw, reuters_source_config, fetched_at):
         # REST JSON uses ISO 8601: "2024-01-15T14:30:00Z"
         doc = normalize(rest_json_raw, reuters_source_config, fetched_at)
-        assert doc.published_date == datetime(
-            2024, 1, 15, 14, 30, 0, tzinfo=timezone.utc
-        )
+        assert doc.published_date == datetime(2024, 1, 15, 14, 30, 0, tzinfo=timezone.utc)
 
     def test_published_date_is_timezone_aware(
         self, reuters_rss_raw, reuters_source_config, fetched_at
@@ -109,9 +91,7 @@ class TestPublishedDateCoercion:
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert doc.published_date.tzinfo is not None
 
-    def test_published_date_is_utc(
-        self, reuters_rss_raw, reuters_source_config, fetched_at
-    ):
+    def test_published_date_is_utc(self, reuters_rss_raw, reuters_source_config, fetched_at):
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert doc.published_date.utcoffset().total_seconds() == 0
 
@@ -123,9 +103,7 @@ class TestRawPayloadPreservation:
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert doc.raw_payload == reuters_rss_raw["raw_payload"]
 
-    def test_raw_payload_is_not_modified(
-        self, reuters_rss_raw, reuters_source_config, fetched_at
-    ):
+    def test_raw_payload_is_not_modified(self, reuters_rss_raw, reuters_source_config, fetched_at):
         original_payload = dict(reuters_rss_raw["raw_payload"])
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert doc.raw_payload == original_payload
@@ -138,9 +116,7 @@ class TestRawPayloadPreservation:
 
 
 class TestHashingIntegration:
-    def test_content_hash_is_64_char_hex(
-        self, reuters_rss_raw, reuters_source_config, fetched_at
-    ):
+    def test_content_hash_is_64_char_hex(self, reuters_rss_raw, reuters_source_config, fetched_at):
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert len(doc.content_hash) == 64
         assert all(c in "0123456789abcdef" for c in doc.content_hash)
@@ -157,17 +133,13 @@ class TestHashingIntegration:
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert doc.identity_key.startswith(reuters_source_config.name)
 
-    def test_document_id_is_set(
-        self, reuters_rss_raw, reuters_source_config, fetched_at
-    ):
+    def test_document_id_is_set(self, reuters_rss_raw, reuters_source_config, fetched_at):
         doc = normalize(reuters_rss_raw, reuters_source_config, fetched_at)
         assert doc.id
         assert isinstance(doc.id, str)
         assert len(doc.id) == 64
 
-    def test_normalize_is_pure_same_input_same_id(
-        self, reuters_source_config, fetched_at
-    ):
+    def test_normalize_is_pure_same_input_same_id(self, reuters_source_config, fetched_at):
         raw_a = load_fixture("rss_reuters_sample.json")
         raw_b = load_fixture("rss_reuters_sample.json")
         doc_a = normalize(raw_a, reuters_source_config, fetched_at)
@@ -175,9 +147,7 @@ class TestHashingIntegration:
         assert doc_a.id == doc_b.id
         assert doc_a.content_hash == doc_b.content_hash
 
-    def test_different_body_different_content_hash(
-        self, reuters_source_config, fetched_at
-    ):
+    def test_different_body_different_content_hash(self, reuters_source_config, fetched_at):
         raw_v1 = load_fixture("rss_reuters_sample.json")
         raw_v2 = load_fixture("rss_reuters_sample.json")
         raw_v2["raw_body"] = "<p>Updated: Fed cuts rates by 50bps instead.</p>"
@@ -188,9 +158,7 @@ class TestHashingIntegration:
 
 
 class TestNormalizationErrors:
-    def test_missing_url_raises_normalization_error(
-        self, reuters_source_config, fetched_at
-    ):
+    def test_missing_url_raises_normalization_error(self, reuters_source_config, fetched_at):
         raw = load_fixture("rss_reuters_sample.json")
         del raw["url"]
         with pytest.raises(NormalizationError):
@@ -204,9 +172,7 @@ class TestNormalizationErrors:
         with pytest.raises(NormalizationError):
             normalize(raw, reuters_source_config, fetched_at)
 
-    def test_unparseable_date_raises_normalization_error(
-        self, reuters_source_config, fetched_at
-    ):
+    def test_unparseable_date_raises_normalization_error(self, reuters_source_config, fetched_at):
         raw = load_fixture("rss_reuters_sample.json")
         raw["published"] = "not-a-valid-date"
         with pytest.raises(NormalizationError):

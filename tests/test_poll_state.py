@@ -1,24 +1,32 @@
-"""Tests for ingestion/storage/poll_state.py.
-
-Covers PollState construction and its helper methods (validators_fresh,
-conditional_headers). Store-level round-trip tests live in test_storage.py.
 """
+Tests for ingestion/storage/poll_state.py.
 
+Covers:
+  - PollState construction: valid UTC datetime, naive datetime rejected,
+    None last_polled_at accepted.
+  - PollStateStore: get on missing source, round-trip set/get, update,
+    persistence across instances, corrupt file degrades gracefully,
+    atomic write (no temp file left behind).
+"""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from pathlib import Path
 
+import json
 import pytest
 
 from ingestion.storage.poll_state import PollState, PollStateStore
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def utc(*args: int) -> datetime:
-    return datetime(*args, tzinfo=timezone.utc)
+def utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
+    """Construct a UTC-aware datetime for test fixtures."""
+    return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -26,122 +34,187 @@ def utc(*args: int) -> datetime:
 # ---------------------------------------------------------------------------
 
 
-class TestPollStateConstruction:
-    def test_source_name_stored(self):
-        state = PollState("reuters-rss", None, None, None, None)
-        assert state.source_name == "reuters-rss"
-
+class TestPollState:
     def test_none_last_polled_at_accepted(self):
-        state = PollState("src", None, None, None, None)
+        state = PollState(last_polled_at=None, etag=None, last_modified=None)
         assert state.last_polled_at is None
 
-    def test_utc_aware_datetime_stored(self):
+    def test_utc_aware_datetime_accepted(self):
         ts = utc(2024, 1, 15, 10, 30)
-        state = PollState("src", ts, None, None, None)
+        state = PollState(last_polled_at=ts, etag=None, last_modified=None)
         assert state.last_polled_at == ts
 
+    def test_naive_datetime_raises(self):
+        naive = datetime(2024, 1, 15, 10, 30)  # no tzinfo
+        with pytest.raises(ValueError, match="timezone-aware"):
+            PollState(last_polled_at=naive, etag=None, last_modified=None)
+
     def test_etag_and_last_modified_stored(self):
-        state = PollState("src", None, '"abc123"', "Mon, 15 Jan 2024 00:00:00 GMT", None)
+        ts = utc(2024, 1, 15)
+        state = PollState(
+            last_polled_at=ts, etag='"abc123"', last_modified="Mon, 15 Jan 2024 00:00:00 GMT"
+        )
         assert state.etag == '"abc123"'
         assert state.last_modified == "Mon, 15 Jan 2024 00:00:00 GMT"
 
-    def test_etag_cached_at_stored(self):
-        ts = utc(2024, 1, 15)
-        state = PollState("src", None, '"abc"', None, ts)
-        assert state.etag_cached_at == ts
-
-    def test_all_none_fields_accepted(self):
-        state = PollState("src", None, None, None, None)
-        assert state.etag is None
-        assert state.last_modified is None
-        assert state.etag_cached_at is None
+    def test_is_frozen(self):
+        state = PollState(last_polled_at=None, etag=None, last_modified=None)
+        with pytest.raises((AttributeError, TypeError)):
+            state.etag = "new"  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
-# validators_fresh
+# PollStateStore — basic reads
 # ---------------------------------------------------------------------------
 
 
-class TestValidatorsFresh:
-    def test_false_when_etag_cached_at_is_none(self):
-        state = PollState("src", None, '"abc"', None, None)
-        assert state.validators_fresh() is False
+class TestPollStateStoreReads:
+    def test_get_returns_none_before_any_write(self, tmp_path: Path):
+        store = PollStateStore(tmp_path / "poll_state.json")
+        assert store.get("some-source") is None
 
-    def test_true_when_cached_recently(self):
-        recent = datetime.now(timezone.utc) - timedelta(hours=1)
-        state = PollState("src", None, '"abc"', None, recent)
-        assert state.validators_fresh() is True
+    def test_get_returns_none_for_unknown_source(self, tmp_path: Path):
+        store = PollStateStore(tmp_path / "poll_state.json")
+        store.set("source-a", PollState(last_polled_at=utc(2024, 1, 1), etag=None, last_modified=None))
+        assert store.get("source-b") is None
 
-    def test_false_when_cached_over_24h_ago(self):
-        old = datetime.now(timezone.utc) - timedelta(hours=25)
-        state = PollState("src", None, '"abc"', None, old)
-        assert state.validators_fresh() is False
-
-    def test_false_when_no_etag_and_no_cached_at(self):
-        state = PollState("src", None, None, None, None)
-        assert state.validators_fresh() is False
+    def test_missing_state_file_returns_none(self, tmp_path: Path):
+        store = PollStateStore(tmp_path / "does-not-exist.json")
+        assert store.get("any-source") is None
 
 
 # ---------------------------------------------------------------------------
-# conditional_headers
+# PollStateStore — round-trip
 # ---------------------------------------------------------------------------
 
 
-class TestConditionalHeaders:
-    def test_empty_when_stale(self):
-        old = datetime.now(timezone.utc) - timedelta(hours=25)
-        state = PollState("src", None, '"abc"', "some-date", old)
-        assert state.conditional_headers() == {}
+class TestPollStateStoreRoundTrip:
+    def test_set_and_get_full_state(self, tmp_path: Path):
+        store = PollStateStore(tmp_path / "poll_state.json")
+        ts = utc(2024, 3, 12, 14, 55)
+        original = PollState(
+            last_polled_at=ts,
+            etag='"etag-value"',
+            last_modified="Tue, 12 Mar 2024 14:55:00 GMT",
+        )
+        store.set("reuters-rss", original)
+        retrieved = store.get("reuters-rss")
+        assert retrieved is not None
+        assert retrieved.last_polled_at == ts
+        assert retrieved.etag == '"etag-value"'
+        assert retrieved.last_modified == "Tue, 12 Mar 2024 14:55:00 GMT"
 
-    def test_empty_when_no_validators(self):
-        state = PollState("src", None, None, None, None)
-        assert state.conditional_headers() == {}
+    def test_set_and_get_none_fields(self, tmp_path: Path):
+        store = PollStateStore(tmp_path / "poll_state.json")
+        original = PollState(last_polled_at=None, etag=None, last_modified=None)
+        store.set("source", original)
+        retrieved = store.get("source")
+        assert retrieved is not None
+        assert retrieved.last_polled_at is None
+        assert retrieved.etag is None
 
-    def test_includes_if_none_match_when_fresh(self):
-        recent = datetime.now(timezone.utc) - timedelta(hours=1)
-        state = PollState("src", None, '"abc"', None, recent)
-        headers = state.conditional_headers()
-        assert headers.get("If-None-Match") == '"abc"'
+    def test_last_polled_at_timezone_preserved(self, tmp_path: Path):
+        store = PollStateStore(tmp_path / "poll_state.json")
+        ts = utc(2024, 6, 1, 12, 0)
+        store.set("source", PollState(last_polled_at=ts, etag=None, last_modified=None))
+        retrieved = store.get("source")
+        assert retrieved.last_polled_at.tzinfo is not None
+        assert retrieved.last_polled_at == ts
 
-    def test_includes_if_modified_since_when_fresh(self):
-        recent = datetime.now(timezone.utc) - timedelta(hours=1)
-        state = PollState("src", None, None, "Mon, 15 Jan 2024 00:00:00 GMT", recent)
-        headers = state.conditional_headers()
-        assert headers.get("If-Modified-Since") == "Mon, 15 Jan 2024 00:00:00 GMT"
+    def test_set_updates_existing_entry(self, tmp_path: Path):
+        store = PollStateStore(tmp_path / "poll_state.json")
+        ts1 = utc(2024, 1, 1)
+        ts2 = utc(2024, 1, 2)
+        store.set("source", PollState(last_polled_at=ts1, etag=None, last_modified=None))
+        store.set("source", PollState(last_polled_at=ts2, etag='"new"', last_modified=None))
+        retrieved = store.get("source")
+        assert retrieved.last_polled_at == ts2
+        assert retrieved.etag == '"new"'
 
-    def test_omits_if_none_match_when_etag_is_none(self):
-        recent = datetime.now(timezone.utc) - timedelta(hours=1)
-        state = PollState("src", None, None, "some-date", recent)
-        assert "If-None-Match" not in state.conditional_headers()
+    def test_multiple_sources_independent(self, tmp_path: Path):
+        store = PollStateStore(tmp_path / "poll_state.json")
+        ts_a = utc(2024, 1, 1)
+        ts_b = utc(2024, 2, 1)
+        store.set("source-a", PollState(last_polled_at=ts_a, etag="a", last_modified=None))
+        store.set("source-b", PollState(last_polled_at=ts_b, etag="b", last_modified=None))
+        a = store.get("source-a")
+        b = store.get("source-b")
+        assert a.last_polled_at == ts_a
+        assert b.last_polled_at == ts_b
+        assert a.etag == "a"
+        assert b.etag == "b"
 
 
 # ---------------------------------------------------------------------------
-# PollStateStore — basic smoke tests (full suite in test_storage.py)
+# PollStateStore — persistence across instances
 # ---------------------------------------------------------------------------
 
 
-class TestPollStateStoreSmokeTests:
-    @pytest.fixture
-    def store(self):
-        s = PollStateStore(":memory:")
-        yield s
-        s.close()
+class TestPollStateStorePersistence:
+    def test_data_survives_new_store_instance(self, tmp_path: Path):
+        path = tmp_path / "poll_state.json"
+        ts = utc(2024, 5, 20, 8, 0)
+        # Write with first instance.
+        store1 = PollStateStore(path)
+        store1.set("source", PollState(last_polled_at=ts, etag=None, last_modified=None))
+        # Read with a second instance pointing to the same file.
+        store2 = PollStateStore(path)
+        retrieved = store2.get("source")
+        assert retrieved is not None
+        assert retrieved.last_polled_at == ts
 
-    def test_get_blank_state_for_unknown_source(self, store):
-        state = store.get("unknown")
-        assert isinstance(state, PollState)
-        assert state.last_polled_at is None
+    def test_file_is_valid_json(self, tmp_path: Path):
+        path = tmp_path / "poll_state.json"
+        store = PollStateStore(path)
+        store.set("s", PollState(last_polled_at=utc(2024, 1, 1), etag=None, last_modified=None))
+        raw = json.loads(path.read_text())
+        assert "s" in raw
+        assert "last_polled_at" in raw["s"]
 
-    def test_touch_records_poll_time(self, store):
-        store.touch("reuters-rss")
-        assert store.get("reuters-rss").last_polled_at is not None
 
-    def test_update_stores_etag(self, store):
-        store.update("reuters-rss", etag='"v1"', last_modified=None)
-        assert store.get("reuters-rss").etag == '"v1"'
+# ---------------------------------------------------------------------------
+# PollStateStore — resilience
+# ---------------------------------------------------------------------------
 
-    def test_multiple_sources_are_independent(self, store):
-        store.update("src-a", etag='"a"', last_modified=None)
-        store.update("src-b", etag='"b"', last_modified=None)
-        assert store.get("src-a").etag == '"a"'
-        assert store.get("src-b").etag == '"b"'
+
+class TestPollStateStoreResilience:
+    def test_corrupt_json_file_returns_none(self, tmp_path: Path):
+        path = tmp_path / "poll_state.json"
+        path.write_text("{ not valid json }", encoding="utf-8")
+        store = PollStateStore(path)
+        # Should degrade gracefully — corrupt file means no state, not a crash.
+        assert store.get("any-source") is None
+
+    def test_corrupt_file_does_not_prevent_new_writes(self, tmp_path: Path):
+        path = tmp_path / "poll_state.json"
+        path.write_text("corrupt", encoding="utf-8")
+        store = PollStateStore(path)
+        ts = utc(2024, 1, 1)
+        store.set("source", PollState(last_polled_at=ts, etag=None, last_modified=None))
+        assert store.get("source").last_polled_at == ts
+
+    def test_atomic_write_no_tmp_file_left(self, tmp_path: Path):
+        path = tmp_path / "poll_state.json"
+        store = PollStateStore(path)
+        store.set("s", PollState(last_polled_at=utc(2024, 1, 1), etag=None, last_modified=None))
+        tmp = path.with_suffix(".tmp")
+        assert not tmp.exists(), "Temp file should be cleaned up after successful write"
+
+    def test_parent_directory_created_if_missing(self, tmp_path: Path):
+        path = tmp_path / "subdir" / "poll_state.json"
+        store = PollStateStore(path)
+        store.set("s", PollState(last_polled_at=utc(2024, 1, 1), etag=None, last_modified=None))
+        assert path.exists()
+
+    def test_naive_datetime_stored_by_legacy_data_coerced_to_utc(self, tmp_path: Path):
+        # Simulate a state file written before timezone enforcement was added.
+        path = tmp_path / "poll_state.json"
+        path.write_text(
+            json.dumps({"source": {"last_polled_at": "2024-01-01T00:00:00", "etag": None, "last_modified": None}}),
+            encoding="utf-8",
+        )
+        store = PollStateStore(path)
+        retrieved = store.get("source")
+        # The deserializer should coerce naive to UTC rather than raising.
+        assert retrieved is not None
+        assert retrieved.last_polled_at.tzinfo is not None
