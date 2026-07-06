@@ -12,6 +12,7 @@ files import these builders directly.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from itertools import cycle, islice
 
 from ingestion.core.document import Document
@@ -92,11 +93,12 @@ def make_document(**overrides) -> Document:
         source_name="test-source",
         url="https://example.com/article/0001",
         tier=1,
-        published_date="2026-06-30T12:00:00Z",
+        published_date=datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc),
         title="Test headline",
         body=ARTICLE_BODY,
+        doc_type="article",
         raw_payload={},
-        fetched_at="2026-06-30T12:00:05Z",
+        fetched_at=datetime(2026, 6, 30, 12, 0, 5, tzinfo=timezone.utc),
     )
     base.update(overrides)
     return Document(**base)

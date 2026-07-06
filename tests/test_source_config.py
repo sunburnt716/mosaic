@@ -7,6 +7,7 @@ Covers:
   - load_sources: happy path, file not found, bad YAML structure,
     duplicate names, all required and optional fields.
 """
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -16,7 +17,6 @@ import pytest
 import yaml
 
 from ingestion.core.source_config import SourceConfig, _parse_interval, load_sources
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -289,7 +289,7 @@ class TestLoadSourcesUniqueness:
             minimal_config(
                 minimal_entry(name="source-a", adapter="rss"),
                 minimal_entry(name="source-b", adapter="rest_json"),
-                minimal_entry(name="source-c", adapter="edgar", doc_type="filing"),
+                minimal_entry(name="source-c", adapter="rss", doc_type="filing"),
             ),
         )
         sources = load_sources(p)
@@ -297,15 +297,17 @@ class TestLoadSourcesUniqueness:
         assert [s.name for s in sources] == ["source-a", "source-b", "source-c"]
 
     def test_all_valid_adapters_accepted(self, tmp_path: Path):
+        # "edgar" is deliberately not a valid adapter: a specialized EDGAR adapter was
+        # tried and retired (see adapters/edgar.py); EDGAR discovery runs through the
+        # generic "rss" adapter plus a transform instead.
         entries = [
             minimal_entry(name="a", adapter="rss"),
             minimal_entry(name="b", adapter="rest_json"),
-            minimal_entry(name="c", adapter="edgar"),
         ]
         p = write_yaml(tmp_path, {"sources": entries})
         sources = load_sources(p)
         adapters = {s.adapter for s in sources}
-        assert adapters == {"rss", "rest_json", "edgar"}
+        assert adapters == {"rss", "rest_json"}
 
 
 # ---------------------------------------------------------------------------
@@ -336,9 +338,7 @@ class TestLoadSourcesHappyPath:
 
     def test_field_mappings_stored(self, tmp_path: Path):
         mappings = {"body": "summary", "published_date": "published"}
-        p = write_yaml(
-            tmp_path, minimal_config(minimal_entry(field_mappings=mappings))
-        )
+        p = write_yaml(tmp_path, minimal_config(minimal_entry(field_mappings=mappings)))
         sources = load_sources(p)
         assert sources[0].field_mappings == mappings
 

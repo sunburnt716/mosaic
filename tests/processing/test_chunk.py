@@ -22,19 +22,20 @@ class TestBuildChunk:
         assert chunk.document_id == "deadbeef"
 
     def test_provenance_copied_from_document(self):
+        published = datetime(2026, 6, 30, 12, 0)
         doc = make_document(
             title="Big News",
             url="https://example.com/a",
             source_name="Reuters",
             tier=1,
-            published_date="2026-06-30T12:00:00Z",
+            published_date=published,
         )
         chunk = build_chunk(doc, 0, "text", (0, 4), (0, 4), chunked_at="t")
         assert chunk.title == "Big News"
         assert chunk.url == "https://example.com/a"
         assert chunk.source_name == "Reuters"
         assert chunk.tier == 1
-        assert chunk.published_date == "2026-06-30T12:00:00Z"
+        assert chunk.published_date == published
 
     def test_chunked_at_injectable(self):
         chunk = build_chunk(make_document(), 0, "t", (0, 1), (0, 1), chunked_at="STAMP")

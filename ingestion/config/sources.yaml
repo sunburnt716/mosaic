@@ -15,8 +15,15 @@
 #
 # poll_interval format: a positive duration string — "30s", "5m", "1h", "1h30m".
 # doc_type controls downstream chunking: "article" = by paragraph, "filing" = by section.
-# field_mappings: maps schema field names → adapter-specific payload keys.
-#   e.g. {"body": "summary"} means the adapter's "summary" key → Document.body.
+# field_mappings: per-source OVERRIDE of which key in the adapter's output dict holds a
+#   Document field, e.g. {"body": "summary"}. Each adapter (rss, rest_json) is format-driven
+#   and already yields a standard output shape (url, title, raw_body, published,
+#   source_article_id) regardless of source, so this is normally {} — only set it for a
+#   source whose entries genuinely don't fit that shape.
+# transform: optional registered per-source correction (ingestion/pipeline/transforms.py)
+#   applied to each raw entry before field-mapping.
+# expects: quality-gate hints — which output fields must be non-empty for this source
+#   (e.g. {"body": false} for a metadata-only discovery feed).
 # auth: adapter-specific credentials. In production, inject secrets via env vars
 #   rather than storing them here in plain text.
 #
@@ -27,21 +34,26 @@ sources:
   # Tier 0 — Primary / Regulatory
   # --------------------------------------------------------------------------
 
-  - name: sec-edgar-8k
-    adapter: edgar
+  # A specialized EDGAR adapter (querying efts.sec.gov full-text search) was tried and
+  # retired: that endpoint has field-name mismatches and returns no filing bodies (see
+  # adapters/edgar.py). EDGAR discovery instead runs through the generic RSS adapter
+  # pointed at the getcurrent Atom feed, with a transform that cleans the entry title.
+  - name: sec-edgar
+    adapter: rss
     tier: 0
-    url: https://efts.sec.gov/LATEST/search-index?forms=8-K
-    poll_interval: "1h"
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&company=&dateb=&owner=include&count=100&output=atom
+    poll_interval: "2m"
     doc_type: filing
-    field_mappings:
-      title: entity_name
-      published_date: filed_at
-      body: document_text
-      url: filing_url
+    transform: edgar_filing_url
+    field_mappings: {}
     auth: {}
     enabled: true
-    params:
-      form_types: ["8-K", "8-K/A"]
+    headers:
+      User-Agent: "MosaicRAG contact@example.com"
+    expects:
+      title: true
+      url: true
+      body: false
 
   # --------------------------------------------------------------------------
   # Tier 1 — Major Wire Services
@@ -53,13 +65,13 @@ sources:
     url: https://feeds.reuters.com/reuters/businessNews
     poll_interval: "5m"
     doc_type: article
-    field_mappings:
-      title: title
-      body: summary
-      published_date: published
-      url: link
+    field_mappings: {}
     auth: {}
     enabled: true
+    expects:
+      title: true
+      url: true
+      body: true
 
   - name: ap-markets-rss
     adapter: rss
@@ -67,12 +79,12 @@ sources:
     url: https://apnews.com/hub/financial-markets/rss
     poll_interval: "5m"
     doc_type: article
-    field_mappings:
-      title: title
-      body: summary
-      published_date: published
-      url: link
+    field_mappings: {}
     auth: {}
+    expects:
+      title: true
+      url: true
+      body: true
     # Disabled until feed URL is confirmed stable.
     enabled: false
 
@@ -86,10 +98,10 @@ sources:
     url: https://www.ft.com/markets?format=rss
     poll_interval: "15m"
     doc_type: article
-    field_mappings:
-      title: title
-      body: summary
-      published_date: published
-      url: link
+    field_mappings: {}
     auth: {}
+    expects:
+      title: true
+      url: true
+      body: true
     enabled: false

@@ -16,6 +16,9 @@ testpaths = ["tests"]
 # Add the project root to sys.path so `from ingestion.x import y` works in tests
 # without installing the package.
 pythonpath = ["."]
+markers = [
+    "integration: marks tests that hit live external APIs (deselect with -m \"not integration\")",
+]
 
 [tool.ruff]
 target-version = "py311"

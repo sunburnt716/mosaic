@@ -47,7 +47,7 @@ class Chunk:
     url: str
     source_name: str
     tier: int
-    published_date: str
+    published_date: datetime
     # --- lifecycle ---
     chunked_at: str  # ISO 8601 timestamp of when this chunk was created
 

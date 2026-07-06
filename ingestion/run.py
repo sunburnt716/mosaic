@@ -19,6 +19,7 @@ Scheduler design (tick-based):
     timestamp to sleep precisely is a future optimisation; at the smallest expected
     poll_interval (~1 min), a 30 s tick wastes negligible CPU.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,8 +31,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ingestion.core.source_config import SourceConfig, load_sources
-from ingestion.engine import Engine, PlaceholderEngine
+from ingestion.engine import ConcreteEngine, Engine
 from ingestion.storage.poll_state import PollStateStore
+from ingestion.storage.raw_store import RawStore
+from ingestion.storage.seen_store import SeenStore
 
 log = logging.getLogger(__name__)
 
@@ -279,11 +282,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # --- Wire dependencies ---
-    # Poll state lives alongside the config so it's easy to find and wipe for a
-    # clean re-run. The concrete engine will be wired here once implemented.
+    # State/data files live alongside the config so they're easy to find and wipe for
+    # a clean re-run.
     poll_state_path = args.config.parent / "poll_state.json"
     poll_state = PollStateStore(poll_state_path)
-    engine: Engine = PlaceholderEngine()
+    raw_store = RawStore(str(args.config.parent / "raw.db"))
+    seen_store = SeenStore(str(args.config.parent / "seen.db"))
+    engine: Engine = ConcreteEngine(raw_store, seen_store, poll_state)
 
     # --- Graceful shutdown ---
     # Signal sets stop_event. The current tick (or the current source within it)

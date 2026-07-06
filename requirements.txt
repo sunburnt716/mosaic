@@ -1,5 +1,6 @@
 pyyaml>=6.0
-pytest>=8.0
+feedparser>=6.0
+requests>=2.31
 # Phase 1 chunking sizes chunks with the MiniLM tokenizer (embedding-aligned). transformers
 # provides AutoTokenizer; the unit suite injects a fake tokenizer and does not need it.
 transformers>=4.0

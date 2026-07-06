@@ -12,10 +12,14 @@ sources (tiered) → format adapters → normalizer → dedup → raw store →
 processing (chunk + embed) → Chroma → retrieval (search + re-rank + cluster)
 → generative models → interfaces.
 
-**Currently building:** the ingestion engine (everything up to and including dedup)
-and the **processing extraction engine** (downstream of storage). Processing Phase 0
-(document-type inference + validation) and Phase 1 (chunking — Documents → `Chunk`s by
-inferred `document_type`) are in place; see "Processing layer" below.
+**Currently building:** the ingestion engine is complete — adapters (RSS, REST-JSON),
+normalizer, dedup, quality gate, storage (raw store, seen store, poll state), and the
+concrete `Engine` wired into the scheduler (`run.py`). The **processing extraction
+engine** (downstream of storage) is also underway: Phase 0 (document-type inference +
+validation) and Phase 1 (chunking — Documents → `Chunk`s by inferred `document_type`)
+are in place; see "Processing layer" below. Ingestion and processing were built as two
+parallel workstreams and merged — see "Document schema: two type fields" below for the
+one contract point where that merge required a deliberate reconciliation.
 
 ## Core principles (always)
 - **Structure mirrors the pipeline.** File/function layout follows data flow,
@@ -56,6 +60,43 @@ pytest                                               # run tests
   last-polled time + ETag/Last-Modified for conditional GETs. `run.py` is the single
   scheduler that reads due-ness; the same scheduler later drives hot-path processing.
 
+## Ingestion engine
+Complete: `adapters/` (RSS, REST-JSON — format-driven, one implementation per format,
+never per source) → `pipeline/` (`normalizer`, `dedup`, `hashing`, `quality`, `transforms`,
+`validation`) → `storage/` (`raw_store`, `seen_store`, `poll_state`), orchestrated by
+`ConcreteEngine` (`ingestion/engine.py`), which satisfies the `Engine` Protocol that
+`run.py`'s scheduler (`tick()`/`run_forever()`) depends on.
+
+- **`ConcreteEngine.process_source(source)` handles exactly one source** and returns
+  `None`. It does not loop over sources and does not check `enabled` — multi-source
+  dispatch, disabled-source skipping, and per-source failure isolation across a tick are
+  `run.py`'s job (`select_due_sources`, `tick`), not the engine's. `process_source` only
+  catches the fetch-boundary signals it knows how to handle (`NotModifiedSignal`,
+  `TransportError`, `FetchError`) and per-record `NormalizationError`s (dropped and
+  counted); anything else propagates to `tick()`'s own isolation.
+- **Adapters emit a fixed standard shape** (`url`, `title`, `raw_body`, `published`,
+  `source_article_id`, `raw_payload`) regardless of source. `SourceConfig.field_mappings`
+  is a per-source *override* for the rare source whose entries don't fit — normally `{}`.
+- **SEC EDGAR: no specialized adapter.** A dedicated adapter querying EDGAR's full-text
+  search (`efts.sec.gov`) was tried and retired — that endpoint has field-name mismatches
+  and returns no filing bodies (see `adapters/edgar.py`, kept as a documented placeholder).
+  EDGAR discovery instead runs through the generic RSS adapter pointed at the `getcurrent`
+  Atom feed, with the `edgar_filing_url` transform (`pipeline/transforms.py`) cleaning the
+  entry title. `"edgar"` is deliberately **not** a valid `SourceConfig.adapter` value.
+- **Quality gate (`pipeline/quality.py`) is advisory only** — it warns on collapsed
+  batches, empty-body rates, fallback titles, etc., but never drops or blocks. Per-source
+  thresholds (`SourceConfig.max_fallback_title_rate`, `max_empty_body_rate`, `min_records`,
+  `expects`) tune it; unset, the gate's source-agnostic defaults apply.
+- **Transport validation (`pipeline/validation.py`) is fail-closed** — a structurally
+  broken batch (HTML challenge page, malformed feed) is refused whole via `TransportError`
+  before it ever reaches normalize/dedup/store. This is a different layer from the quality
+  gate: transport judges the *batch's format*, quality judges *content patterns*.
+- **Runtime deps are real now**: `requirements.txt` has `pyyaml`, `feedparser`, `requests`,
+  `transformers` (chunk-sizing tokenizer). `requirements-dev.txt` has `pytest`,
+  `pytest-mock`, `ruff`. Adapters import `feedparser`/`requests` lazily inside their fetch
+  methods, so the unit suite runs without them installed — only live-network or
+  integration runs need `requirements.txt`.
+
 ## Processing layer (Extraction Engine)
 The processing layer sits **downstream of storage**: it reads normalized Documents,
 infers their type, chunks by type, embeds, and writes vectors to Chroma. It is a
@@ -80,16 +121,28 @@ Tier 2 depends on velocity). One scheduler only — no second scheduler.
 2 embeddings (MiniLM/Gemini — embeddings only, never type detection) · 3 Chroma write ·
 4 wire into the scheduler (hot-path frequency/cost decision) · 5 query-time fallback.
 
+### Document schema: two type fields (ingestion + processing reconciliation)
+Ingestion and processing were built as parallel workstreams with their own Document
+type field, then merged. Rather than pick one, both fields exist because they answer
+different questions:
+- **`Document.doc_type`** — stamped verbatim at ingest from `SourceConfig.doc_type`
+  (an ingest-time field, alongside `tickers`/`sectors`/`key_points`/`status`). It is
+  the human-authored *advisory hint* (the "source signature map"): a source config
+  declares "this feed is filings" or "this feed is articles". Vocabulary is only
+  `article`/`filing` — it cannot express "tweet".
+- **`Document.document_type`** (optional, `None` until Phase 0 inference runs) is the
+  **authoritative** per-document type that Phase 1 chunking dispatches on. It is
+  content-inferred, richer (`article`/`filing`/`tweet`/`unknown`), and may **override**
+  `doc_type` when structure strongly disagrees with the advisory.
+- **Never conflate them.** `doc_type` is what the source *claims*; `document_type` is
+  what Phase 0 *concluded*. The chunking registry keys on `document_type`, never
+  `doc_type` — a source misconfigured as `article` that's actually posting tweets still
+  chunks correctly once inference overrides it.
+
 ### Phase 0 decisions (document-type inference + validation)
 - **Heuristic only — no model.** Type detection uses algorithmic signals (token count,
   distinct filing markers, paragraph structure). LLMs/embeddings are Phase 2+ and are
   for embeddings, never for typing. This is a hard constraint.
-- **`Document.document_type`** (new, optional, `None` until inferred) is the
-  authoritative per-document type that Phase 1 chunks by. It is **distinct from
-  `SourceConfig.doc_type`**, which is only the human-authored *advisory hint*
-  (the "source signature map") — inference may consult and **override** it. Two
-  different names for two different things (inferred result vs config declaration);
-  there is exactly one type field on the Document — no redundancy.
 - **Advisory vocabulary gap:** `SourceConfig.doc_type` is only `article`/`filing`, so
   genuine tweets are caught by structure, not config. Reconciliation policy: a *strong*
   structural signal (filing markers + length; or confidently tiny text) overrides the
@@ -131,6 +184,21 @@ Tier 2 depends on velocity). One scheduler only — no second scheduler.
 - **Pure, no I/O.** Chunking takes in-memory Documents and returns Chunks. The offline
   test suite injects a word-level fake tokenizer (`tests/processing/conftest.py`) so it
   never downloads MiniLM or imports `transformers`.
+
+## Known gaps
+- **`feedparser` may be unavailable in sandboxed dev environments** (its `sgmllib3k`
+  dependency can fail to build without full PyPI network access). Adapters import it
+  lazily inside `RssAdapter._fetch_feed`, so this only affects the handful of tests that
+  exercise the real feed parse (`test_adapter_contract.py`'s conditional-GET/transport
+  classes, `test_quality_fixtures.py`, `test_transforms.py`'s fixture-roundtrip class,
+  all of `test_validation.py`) — everything else in the suite is unaffected. Install
+  `requirements.txt` in an environment with full network access to run those.
+- **`tests/test_sources.py` and `tests/test_integration.py` were not ported** from the
+  parallel ingestion workstream: both depend on a JSON-based source registry
+  (`ingestion/sources.py` + a repo-root `config/sources.json`) that was superseded by
+  this branch's YAML registry (`ingestion/config/sources.yaml` + `core.source_config.
+  load_sources`) — two competing registries would conflict. `test_source_config.py`
+  already covers the YAML registry's loader/validation.
 
 ## Guardrails (prefer X over Y)
 - Prefer surfacing news + sources over generating advice. No buy/sell/hold, ever.

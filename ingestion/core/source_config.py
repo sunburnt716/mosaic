@@ -11,17 +11,32 @@ Per-source config contract (all fields required unless noted):
   adapter                          — which format adapter handles this source.
   doc_type                         — "article" or "filing"; controls downstream chunking.
 
+Optional fields (quality gate + transform):
+  transform                  — name of a registered per-source transform
+                               (ingestion/pipeline/transforms.py), applied to each raw
+                               entry before generic field-mapping. None means no transform.
+  expects                    — quality-gate hints: which output fields must be non-empty
+                               for this source (e.g. {"body": False} for a metadata-only
+                               discovery feed). See ingestion/pipeline/quality.py.
+  max_fallback_title_rate,
+  max_empty_body_rate,
+  min_records                — optional per-source overrides for the quality gate's
+                               source-agnostic default thresholds. None means "use the
+                               gate's default"; these never drop records, only tune when
+                               it warns.
+
 Validation is strict and runs at startup (load_sources). A source that fails
 validation kills the process before any network calls are made — partial configs
 must never reach production.
 """
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 import yaml
 
@@ -30,8 +45,12 @@ import yaml
 # ---------------------------------------------------------------------------
 
 # Keys that map to registered Adapter classes in adapters/registry.py.
-# Update this set when a new adapter is added there.
-_VALID_ADAPTERS: frozenset[str] = frozenset({"rss", "rest_json", "edgar"})
+# Update this set when a new adapter is added there. "edgar" is deliberately absent:
+# a specialized EDGAR adapter was tried and retired (the efts.sec.gov full-text search
+# endpoint has field-name mismatches and returns no bodies) — SEC EDGAR discovery is
+# ingested through the generic "rss" adapter (pointed at the getcurrent Atom feed) plus
+# the edgar_filing_url transform. See adapters/edgar.py.
+_VALID_ADAPTERS: frozenset[str] = frozenset({"rss", "rest_json"})
 
 # Valid values for doc_type, which controls which chunking strategy is applied
 # downstream: filings are chunked by section, articles by paragraph.
@@ -72,9 +91,7 @@ def _parse_interval(raw: str) -> timedelta:
     delta = timedelta(hours=hours, minutes=minutes, seconds=seconds)
     if delta.total_seconds() <= 0:
         # e.g. "0h0m0s" passes the regex but is nonsensical for a poll interval.
-        raise ValueError(
-            f"poll_interval must be positive; {raw!r} resolves to zero seconds."
-        )
+        raise ValueError(f"poll_interval must be positive; {raw!r} resolves to zero seconds.")
     return delta
 
 
@@ -93,10 +110,12 @@ class SourceConfig:
     Field notes:
       tier         — stamped on every Document produced by this source at ingest.
                      Never inferred from content downstream. 0 = most trusted.
-      field_mappings — maps schema field names to adapter-specific payload keys,
-                     e.g. {"body": "summary", "published_date": "published"}.
-                     The normalizer reads this to translate adapter output without
-                     per-source code branches.
+      field_mappings — maps a Document field name to the key holding it in the
+                     adapter's output dict, e.g. {"body": "summary"}. Each adapter is
+                     format-driven and already yields a standard shape (url, title,
+                     raw_body, published, source_article_id) regardless of source, so
+                     this is normally {} — it exists as a per-source override for the
+                     rare case where a source's raw entries don't fit that shape.
       auth         — adapter-specific credentials, e.g. {"token": "Bearer xyz"}.
                      Not stored in sources.yaml in plain text for production; the
                      loader accepts it here so tests and dev configs can supply it.
@@ -105,6 +124,11 @@ class SourceConfig:
       params       — catch-all for adapter-specific knobs not covered above
                      (e.g. pagination config, result filters).
       headers      — HTTP headers added to every request for this source.
+      transform    — name of a registered per-source transform (pipeline/transforms.py)
+                     applied to each raw entry before field-mapping. None means no
+                     transform runs for this source.
+      expects, max_fallback_title_rate, max_empty_body_rate, min_records —
+                     optional quality-gate tuning; see module docstring.
     """
 
     name: str
@@ -118,6 +142,11 @@ class SourceConfig:
     enabled: bool
     params: dict[str, Any]
     headers: dict[str, str]
+    transform: Optional[str] = None
+    expects: dict[str, bool] = field(default_factory=dict)
+    max_fallback_title_rate: Optional[float] = None
+    max_empty_body_rate: Optional[float] = None
+    min_records: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +192,7 @@ def _validate_entry(entry: dict[str, Any], index: int) -> SourceConfig:
             f"{label}: 'tier' must be an integer, got {tier!r} ({type(tier).__name__})."
         )
     if not (_TIER_MIN <= tier <= _TIER_MAX):
-        raise ValueError(
-            f"{label}: 'tier' must be {_TIER_MIN}–{_TIER_MAX}, got {tier}."
-        )
+        raise ValueError(f"{label}: 'tier' must be {_TIER_MIN}–{_TIER_MAX}, got {tier}.")
 
     # --- url ---
     url = _require(entry, "url", label)
@@ -185,8 +212,7 @@ def _validate_entry(entry: dict[str, Any], index: int) -> SourceConfig:
     raw_doc_type = entry.get("doc_type", "article")
     if raw_doc_type not in _VALID_DOC_TYPES:
         raise ValueError(
-            f"{label}: 'doc_type' must be one of {sorted(_VALID_DOC_TYPES)}, "
-            f"got {raw_doc_type!r}."
+            f"{label}: 'doc_type' must be one of {sorted(_VALID_DOC_TYPES)}, got {raw_doc_type!r}."
         )
     doc_type: Literal["article", "filing"] = raw_doc_type  # type: ignore[assignment]
 
@@ -205,9 +231,7 @@ def _validate_entry(entry: dict[str, Any], index: int) -> SourceConfig:
     # --- enabled (optional, defaults to True) ---
     enabled = entry.get("enabled", True)
     if not isinstance(enabled, bool):
-        raise ValueError(
-            f"{label}: 'enabled' must be a boolean (true/false), got {enabled!r}."
-        )
+        raise ValueError(f"{label}: 'enabled' must be a boolean (true/false), got {enabled!r}.")
 
     # --- params (optional, defaults to {}) ---
     params = entry.get("params", {})
@@ -221,6 +245,37 @@ def _validate_entry(entry: dict[str, Any], index: int) -> SourceConfig:
     if not all(isinstance(k, str) and isinstance(v, str) for k, v in headers.items()):
         raise ValueError(f"{label}: 'headers' must be a str→str mapping.")
 
+    # --- transform (optional, defaults to None) ---
+    transform = entry.get("transform")
+    if transform is not None and not isinstance(transform, str):
+        raise ValueError(f"{label}: 'transform' must be a string, got {transform!r}.")
+
+    # --- expects (optional, defaults to {}) ---
+    expects = entry.get("expects", {})
+    if not isinstance(expects, dict):
+        raise ValueError(f"{label}: 'expects' must be a mapping.")
+    if not all(isinstance(k, str) and isinstance(v, bool) for k, v in expects.items()):
+        raise ValueError(f"{label}: 'expects' must be a str→bool mapping.")
+
+    # --- quality-gate threshold overrides (optional, default to None = gate default) ---
+    max_fallback_title_rate = entry.get("max_fallback_title_rate")
+    if max_fallback_title_rate is not None and not isinstance(
+        max_fallback_title_rate, (int, float)
+    ):
+        raise ValueError(
+            f"{label}: 'max_fallback_title_rate' must be a number, got {max_fallback_title_rate!r}."
+        )
+    max_empty_body_rate = entry.get("max_empty_body_rate")
+    if max_empty_body_rate is not None and not isinstance(max_empty_body_rate, (int, float)):
+        raise ValueError(
+            f"{label}: 'max_empty_body_rate' must be a number, got {max_empty_body_rate!r}."
+        )
+    min_records = entry.get("min_records")
+    if min_records is not None and (
+        not isinstance(min_records, int) or isinstance(min_records, bool)
+    ):
+        raise ValueError(f"{label}: 'min_records' must be an integer, got {min_records!r}.")
+
     return SourceConfig(
         name=str(name).strip(),
         adapter=adapter,
@@ -233,6 +288,15 @@ def _validate_entry(entry: dict[str, Any], index: int) -> SourceConfig:
         enabled=enabled,
         params=dict(params),
         headers=dict(headers),
+        transform=transform,
+        expects=dict(expects),
+        max_fallback_title_rate=(
+            float(max_fallback_title_rate) if max_fallback_title_rate is not None else None
+        ),
+        max_empty_body_rate=(
+            float(max_empty_body_rate) if max_empty_body_rate is not None else None
+        ),
+        min_records=min_records,
     )
 
 
@@ -270,15 +334,11 @@ def load_sources(config_path: Path) -> list[SourceConfig]:
     raw = yaml.safe_load(config_path.read_text())
 
     if not isinstance(raw, dict) or "sources" not in raw:
-        raise ValueError(
-            f"{config_path}: expected a top-level mapping with a 'sources' key."
-        )
+        raise ValueError(f"{config_path}: expected a top-level mapping with a 'sources' key.")
 
     entries = raw["sources"]
     if not isinstance(entries, list) or len(entries) == 0:
-        raise ValueError(
-            f"{config_path}: 'sources' must be a non-empty list of source mappings."
-        )
+        raise ValueError(f"{config_path}: 'sources' must be a non-empty list of source mappings.")
 
     sources: list[SourceConfig] = []
     for i, entry in enumerate(entries):

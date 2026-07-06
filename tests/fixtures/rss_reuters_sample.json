@@ -1,0 +1,15 @@
+{
+  "url": "https://www.reuters.com/markets/us/fed-cuts-rates-2024-01-15/",
+  "title": "Fed cuts rates by 25 basis points",
+  "raw_body": "<p>The Federal Reserve cut interest rates by 25 basis points on Wednesday, its first reduction since the pandemic era, as inflation continued its retreat toward the central bank's 2% target.</p>",
+  "published": "Mon, 15 Jan 2024 14:30:00 GMT",
+  "source_article_id": "tag:reuters.com,2024:newsml_L1N3D30GH",
+  "raw_payload": {
+    "id": "tag:reuters.com,2024:newsml_L1N3D30GH",
+    "title": "Fed cuts rates by 25 basis points",
+    "link": "https://www.reuters.com/markets/us/fed-cuts-rates-2024-01-15/",
+    "summary": "<p>The Federal Reserve cut interest rates by 25 basis points on Wednesday, its first reduction since the pandemic era, as inflation continued its retreat toward the central bank's 2% target.</p>",
+    "published": "Mon, 15 Jan 2024 14:30:00 GMT",
+    "tags": [{"term": "Markets"}, {"term": "US Economy"}, {"term": "Federal Reserve"}]
+  }
+}
