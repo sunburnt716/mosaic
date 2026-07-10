@@ -11,8 +11,10 @@ SDK's exception hierarchy — is retried with exponential backoff up to `max_att
 every attempt fails, `synthesize()` returns `INSUFFICIENT_DATA_MARKER` rather than raising or
 returning a partial/garbled response. That marker is deliberately *not* valid
 CLAIM/SOURCE_CHUNK_ID/CONFIDENCE text — fed into Phase 3's ClaimParser it parses to zero
-claims, which Phase 4's existing "zero claims survive" rejection policy already turns into the
-honest empty-state answer. No separate failure-signaling path between phases is needed.
+*valid* claims (it may still surface as a single `is_valid=False` block, since ClaimParser
+never silently drops non-empty text — see that module), which Phase 4's existing "zero claims
+survive" rejection policy already turns into the honest empty-state answer either way. No
+separate failure-signaling path between phases is needed.
 
 This fail-closed guarantee covers *call* failures only. Resolving the client in the first place
 (missing `GEMINI_API_KEY`, the `google-genai` package not installed) is a configuration error,
