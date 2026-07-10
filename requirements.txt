@@ -14,3 +14,7 @@ groq>=0.9
 # built) writes to. Not yet imported anywhere lazily — only the (skipped-by-default)
 # end-to-end integration test needs it installed.
 chromadb>=0.5
+# Generation Phase 2's Synthesizer calls Gemini Flash via Google's current unified SDK
+# (`from google import genai`). Lazily imported; the unit suite (including the golden-path
+# integration test) injects a fake client, so this is never imported offline.
+google-genai>=1.0

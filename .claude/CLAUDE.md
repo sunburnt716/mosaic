@@ -26,6 +26,12 @@ output); see "Retrieval engine" below. It was built **ahead of** processing Phas
 (embeddings) and Phase 3 (Chroma write), which don't exist yet — retrieval is implemented
 and tested against the `chromadb.Collection` interface via fakes/fixtures, not a live
 collection; see that section's dependency-gap note before assuming it runs end to end today.
+The **generation engine** (`generation/`, downstream of retrieval) is now also built end
+to end — all five phases of the Generation Pipeline spec (prompt assembly → synthesis →
+claim parsing → citation validation → output formatting); see "Generation engine" below.
+Unlike retrieval, generation has no live-network dependency gap: every phase is
+fully offline-testable (Gemini and the semantic-fallback embedder are both injectable),
+so its golden-path integration test runs in CI rather than being skipped.
 
 ## Core principles (always)
 - **Structure mirrors the pipeline.** File/function layout follows data flow,
@@ -47,6 +53,10 @@ collection; see that section's dependency-gap note before assuming it runs end t
   lazy-imported behind `processing/utils/embedding.py` / `retrieval/router.py` and
   injectable in tests, same pattern as `feedparser`/`transformers` — the offline suite
   needs none of the three installed.
+- `google-genai` is a real dep too (generation's Phase 2 Gemini Flash call), lazy-imported
+  behind `generation/synthesizer.py`'s `Synthesizer` and injectable in tests, same pattern.
+  `GEMINI_API_KEY` (alongside `GROQ_API_KEY`) is the env var a live run needs; neither is
+  read unless a caller omits the injectable client.
 
 ## Commands
 ```bash
@@ -271,6 +281,73 @@ in-process Chroma collection itself — it does not depend on the missing phases
 does need network (MiniLM download, Groq API + `GROQ_API_KEY`) and is skipped by default,
 same convention as the ingestion suite's live-network tests.
 
+## Generation engine
+`generation/` (sibling top-level package of `ingestion/`, `processing/`, `retrieval/`)
+implements the Generation Pipeline spec end to end: `RetrievalOutput` → prompt → Gemini
+synthesis → parsed claims → grounding-validated claims → a typed `GeneratedAnswer` for the
+user-facing surface. Five phases, one module each:
+
+`prompt_builder.py` (`PromptBuilder`) → `synthesizer.py` (`Synthesizer`) →
+`claim_parser.py` (`ClaimParser`) → `validator.py` (`CitationValidator`) →
+`formatter.py` (`AnswerFormatter`). Shared dataclasses live in `contracts.py` (`LensDoc`,
+`ParsedClaim`, `ValidatedClaim`, `Citation`, `GeneratedAnswer`).
+
+**Locked decisions, as implemented:**
+- **Structured output is the parsing strategy.** Gemini is prompted for exact
+  `CLAIM:`/`SOURCE_CHUNK_ID:`/`CONFIDENCE:` blocks split by `---`; `claim_parser.py` is a
+  deterministic line-prefix parser, never an LLM re-parse of freeform prose.
+- **No model-emitted spans, ever.** `formatter.py`'s citation sentence selection is a
+  plain word-overlap heuristic (Jaccard over punctuation-stripped, lowercased word sets)
+  against `text_metrics.sentence_spans` — the same sentence-boundary definition Phase 1
+  chunking's highlight-span selection uses (extracted there specifically for this reuse;
+  see "Processing layer" → Phase 1 and `processing/utils/highlight.py`).
+- **Tier is context, never a filter.** `formatter.py` cites the best-grounded claim
+  regardless of its source's tier; Tier 2/3 sources get an inline skepticism note appended
+  to the `Citation.source` label, never suppression.
+- **Reject, don't repair.** An ungrounded claim is dropped, not sent back to Gemini for
+  another round — no regenerate-on-failure loop anywhere in this pipeline.
+- **Fail-closed synthesis.** `Synthesizer` retries a failed Gemini call with exponential
+  backoff, then gives up and returns a marker string that is deliberately not valid
+  CLAIM/SOURCE_CHUNK_ID/CONFIDENCE text — it flows through claim_parser/validator as zero
+  grounded claims, landing on the same honest empty-state answer as any other
+  fully-hallucinated response, with no separate failure-signaling path between phases.
+
+**Scope-boundary deviation from the spec's phase organization (read before assuming
+validator.py drops claims):** the spec's "reject, don't repair" *policy* — actually
+dropping ungrounded claims, the >30%-dropped confidence warning, and the zero-survivor
+honest empty state — is written under Phase 4's heading, but those are actions on the
+*assembled answer*, which only Phase 5 builds. `validator.py`'s `CitationValidator`
+therefore only makes the per-claim grounding decision (`is_grounded`, confidence,
+supporting chunk) and returns every claim, grounded and ungrounded alike; `formatter.py`'s
+`AnswerFormatter` is where dropping/warning/empty-state actually happens. Both modules'
+docstrings cross-reference this split explicitly.
+
+**Deviations from the spec's literal field/input lists** (both additive, both necessary —
+documented here so they're not mistaken for drift, same convention as retrieval's):
+- **`ParsedClaim.source_chunk_id`/`.confidence` are optional, plus a new `is_valid`
+  flag** — the spec's literal 3-field `ParsedClaim` can't represent "this block had no
+  usable ID" any other way, and Phase 3's own logic requires malformed/ID-less blocks to
+  be "passed forward marked invalid," not silently dropped.
+- **`AnswerFormatter.format` takes `clusters: list[StoryCluster]`** beyond the spec's
+  literal Phase 5 input list (`validated_claims`, `chunks`) — needed to derive
+  `corroboration_summary` from retrieval's already-computed `StoryCluster.outlet_count`
+  instead of reinventing grouping logic in generation.
+- **`corroboration_summary` is keyed by `StoryCluster.cluster_id`**, a real stable
+  identifier, not a human-readable topic label like the spec's illustrative
+  `"earnings_beat"` — generating an actual topic label would need summarization or an LLM
+  call, out of scope for a phase whose entire purpose is that nothing here can hallucinate
+  content.
+- **`LensDoc` ships no bundled content.** It's a minimal `(title, text)` dataclass;
+  real investing-framework content is product content, not something to invent while
+  implementing architecture — `PromptBuilder` accepts whatever list it's given.
+
+**No live-network dependency gap, unlike retrieval:** every generation phase is
+fully offline-testable — the Gemini client and the semantic-fallback embedder are both
+injectable, so `tests/generation/test_integration.py`'s golden-path test runs in CI
+(not skipped). It does not need a live Chroma collection either: it starts from a
+hand-built `RetrievalOutput` fixture, matching the spec's own "Consumes: RetrievalOutput
+from the Retrieval Pipeline" framing.
+
 ## Known gaps
 - **`feedparser` may be unavailable in sandboxed dev environments** (its `sgmllib3k`
   dependency can fail to build without full PyPI network access). Adapters import it
@@ -313,6 +390,10 @@ tests/
     conftest.py               # FakeGroqClient, FakeChromaCollection, fake_query_embedder
     fixtures.py                # make_routing_result, make_retrieved_chunk, make_story_cluster
     test_integration.py       # skipped-by-default: full pipeline over a real Chroma collection
+    test_*_adversarial.py     # edge-case/malformed-input coverage, one file per retrieval phase
+  generation/              # generation layer tests (prompt, synthesis, parsing, validation, format)
+    fixtures.py                # make_lens_doc, make_parsed_claim, make_validated_claim, ...
+    test_integration.py       # golden-path: RetrievalOutput fixture -> GeneratedAnswer, runs in CI
 ```
 
 **Fixture-regression convention:** a source's *fixture + expected `Document`s = its regression
