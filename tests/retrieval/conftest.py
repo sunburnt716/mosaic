@@ -87,12 +87,23 @@ class FakeChromaCollection:
 
 
 def make_query_response(
-    ids: list[str], distances: list[float], metadatas: list[dict], documents: list[str]
+    ids: list[str],
+    distances: list[float],
+    metadatas: list[dict],
+    documents: list[str],
+    embeddings: list[list[float]] | None = None,
 ) -> dict:
-    """Build a single-query Chroma query() response from parallel per-chunk lists."""
-    return {
+    """Build a single-query Chroma query() response from parallel per-chunk lists.
+
+    `embeddings` omitted (None) simulates a caller that didn't request them in `include=`,
+    matching how VectorSearch must degrade when a collection/response lacks vectors.
+    """
+    response = {
         "ids": [ids],
         "distances": [distances],
         "metadatas": [metadatas],
         "documents": [documents],
     }
+    if embeddings is not None:
+        response["embeddings"] = [embeddings]
+    return response

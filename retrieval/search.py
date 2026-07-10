@@ -16,7 +16,8 @@ Similarity assumes Chroma's default cosine-distance space: `similarity = 1 - dis
 metadata fields are preserved on the way out — especially `section_label`/`ordinal`, the
 citation-metadata dependency the spec calls out — via `.get(...)` defaults so a chunk missing
 either (predates the Chunk schema fix, or was never re-indexed) still comes through instead of
-raising.
+raising. Embeddings are requested explicitly (Chroma omits them from `query()` by default) and
+carried onto `RetrievedChunk.embedding` — Phase 4 clustering needs each chunk's own vector.
 
 Non-goals (per spec): no hybrid BM25/keyword search, no cross-collection querying.
 """
@@ -59,9 +60,14 @@ def _to_retrieved_chunks(raw: dict[str, Any]) -> list[RetrievedChunk]:
     distances = (raw.get("distances") or [[]])[0]
     metadatas = (raw.get("metadatas") or [[]])[0]
     documents = (raw.get("documents") or [[]])[0]
+    embeddings_by_index = (raw.get("embeddings") or [[]])[0]
+    if len(embeddings_by_index) != len(ids):
+        embeddings_by_index = [None] * len(ids)  # embeddings not requested/returned
 
     chunks = []
-    for chunk_id, distance, metadata, text in zip(ids, distances, metadatas, documents):
+    for chunk_id, distance, metadata, text, chunk_embedding in zip(
+        ids, distances, metadatas, documents, embeddings_by_index
+    ):
         metadata = metadata or {}
         chunks.append(
             RetrievedChunk(
@@ -75,6 +81,7 @@ def _to_retrieved_chunks(raw: dict[str, Any]) -> list[RetrievedChunk]:
                 url=metadata.get("url", ""),
                 section_label=metadata.get("section_label"),
                 ordinal=metadata.get("ordinal"),
+                embedding=list(chunk_embedding) if chunk_embedding is not None else None,
             )
         )
     return chunks
@@ -94,7 +101,9 @@ class VectorSearch:
     ) -> list[RetrievedChunk]:
         where = build_where_clause(routing, now_epoch=now_epoch)
         kwargs: dict[str, Any] = dict(
-            query_embeddings=[routing.query_embedding], n_results=n_results
+            query_embeddings=[routing.query_embedding],
+            n_results=n_results,
+            include=["metadatas", "documents", "distances", "embeddings"],
         )
         if where is not None:
             kwargs["where"] = where

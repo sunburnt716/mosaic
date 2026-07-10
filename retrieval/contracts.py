@@ -20,6 +20,12 @@ the spec: they must be passed through untouched from Chroma metadata when presen
 `processing.chunk.Chunk`, which now stamps both) so citation can locate a chunk within its
 parent document. `None` on either means the source chunk predates that fix or citation is
 degraded for it — retrieval still functions, it just can't cite as precisely.
+
+`RetrievedChunk.embedding` is an addition beyond the spec's literal Phase 2 field list, added
+because Phase 4 clustering explicitly requires it ("no new embedding model — reuse existing
+chunk vectors") and there is no other place for those vectors to live between Phase 2 and
+Phase 4. Optional and defaulted to `None` so it stays additive, not a break of the locked
+contract's existing fields; Phase 2 populates it by requesting embeddings from Chroma.
 """
 
 from __future__ import annotations
@@ -60,6 +66,7 @@ class RetrievedChunk:
     url: str
     section_label: str | None  # pass through from Chroma metadata; needed for citations
     ordinal: int | None  # pass through from Chroma metadata; needed for citations
+    embedding: list[float] | None = None  # chunk's own vector; needed for Phase 4 clustering
 
 
 @dataclass(frozen=True)

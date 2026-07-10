@@ -96,6 +96,33 @@ class TestVectorSearch:
         assert kwargs["where"] == build_where_clause(routing, now_epoch=1_000_000)
         assert kwargs["n_results"] == DEFAULT_N_RESULTS
 
+    def test_embeddings_requested_explicitly(self):
+        # Chroma omits embeddings from query() results unless asked for; Phase 4 clustering
+        # needs each chunk's own vector, so VectorSearch must always request them.
+        collection = FakeChromaCollection(self._response())
+        search = VectorSearch(collection)
+        search.search(make_routing_result())
+        assert "embeddings" in collection.last_kwargs["include"]
+
+    def test_embedding_passed_through_when_present(self):
+        response = make_query_response(
+            ids=["doc-1#0"],
+            distances=[0.1],
+            metadatas=[{"source_name": "Reuters", "tier": 1, "published_epoch": 1, "url": "u"}],
+            documents=["text"],
+            embeddings=[[0.1, 0.2, 0.3]],
+        )
+        collection = FakeChromaCollection(response)
+        chunk = VectorSearch(collection).search(make_routing_result())[0]
+        assert chunk.embedding == [0.1, 0.2, 0.3]
+
+    def test_embedding_none_when_not_returned(self):
+        # self._response() never sets "embeddings" — simulates a collection/response that
+        # didn't include vectors; must degrade to None rather than raising.
+        collection = FakeChromaCollection(self._response())
+        chunk = VectorSearch(collection).search(make_routing_result())[0]
+        assert chunk.embedding is None
+
     def test_no_where_kwarg_when_routing_has_no_constraints(self):
         collection = FakeChromaCollection(self._response())
         search = VectorSearch(collection)
