@@ -1,9 +1,11 @@
 """
-Offline test fixtures for Phase 1 chunking.
+Offline test fixtures for Phase 1 chunking and retrieval's query embedding.
 
 Provides `fake_tokenizer`: a word-level stand-in installed as the cached MiniLM tokenizer so
 chunker tests run without downloading a model or importing `transformers` (mirrors how the
-ingestion suite fakes the network). Document builders live in tests/processing/fixtures.py.
+ingestion suite fakes the network). `fake_embedder` does the same for the MiniLM embedder
+(`processing.utils.embedding`), for tests that don't need real semantic vectors. Document
+builders live in tests/processing/fixtures.py.
 """
 
 from __future__ import annotations
@@ -48,3 +50,33 @@ def fake_tokenizer(monkeypatch):
     tokenizer = FakeTokenizer()
     monkeypatch.setattr(tokenization, "_tokenizer", tokenizer)
     return tokenizer
+
+
+class FakeEmbeddingModel:
+    """Deterministic stand-in for the MiniLM SentenceTransformer — offline, no model download.
+
+    Encodes a string as a fixed-length vector derived from its character codes, so equal text
+    always yields equal vectors and different text yields different ones. Not semantically
+    meaningful — tests assert the contract (fixed length, determinism), not real similarity.
+    """
+
+    _DIM = 8
+
+    def encode(self, text: str) -> list[float]:
+        if not text:
+            return [0.0] * self._DIM
+        return [(sum(ord(c) for c in text[i :: self._DIM]) % 97) / 97 for i in range(self._DIM)]
+
+
+@pytest.fixture
+def fake_embedder(monkeypatch):
+    """Install the deterministic FakeEmbeddingModel as embedding's cached model.
+
+    Overwrites the lazily-cached `_model` global so `_get_model()` never triggers the real
+    MiniLM download. Auto-restored to None after the test by monkeypatch.
+    """
+    from processing.utils import embedding
+
+    model = FakeEmbeddingModel()
+    monkeypatch.setattr(embedding, "_model", model)
+    return model
