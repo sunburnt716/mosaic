@@ -15,10 +15,15 @@ embedding model — reuse existing chunk vectors"), which Phase 2 now carries on
 with `include=["embeddings"]`, or predates that) can't be compared and becomes its own
 singleton cluster rather than raising or silently dropping.
 
-Grouping is simple single-link clustering: a chunk joins the first existing cluster whose
-primary chunk it's similar enough to; otherwise it starts a new cluster. `re-ranked` input
-order means earlier chunks (higher final_score) become cluster primaries first, but the
-primary within a cluster is still explicitly `tier` then `published_epoch` per the spec.
+Grouping compares each chunk against a group's *founding member* (`group[0]`, the first chunk
+that started that group) — not the group's eventual tier/recency-selected `primary_chunk`,
+which is only computed once per group after grouping finishes (`_build_cluster`). This is a
+deliberate simplification (one comparison per existing group, not one per group member — true
+single-linkage would compare against every member); it means a chunk that's similar to a
+later, non-founding member but not the founder can end up its own singleton. Acceptable at
+this scale (~15-20 candidates from Phase 3) but worth knowing if clustering results ever look
+under-grouped. `primary_chunk` itself is still explicitly `tier` then `published_epoch` per
+the spec, independent of arrival/founding order.
 
 Non-goals (per spec): no cross-time-window merging (chunks are assumed temporally adjacent).
 """

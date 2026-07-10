@@ -42,6 +42,13 @@ a JSON object (no prose, no code fences) with exactly these keys:
 If nothing is confidently extractable, use empty lists and intent "unknown"."""
 
 
+def _as_string_list(value: Any) -> list[str]:
+    """Coerce a raw classification field to a list of strings, or [] if malformed."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 def _parse_classification(raw_content: str) -> dict[str, Any]:
     """Parse the model's JSON response, falling back to 'unknown' on malformed output.
 
@@ -94,11 +101,11 @@ class QueryRouter:
         raw = self._classify(query)
 
         intent = raw.get("intent")
-        if intent not in VALID_INTENTS:
+        if not isinstance(intent, str) or intent not in VALID_INTENTS:
             intent = "unknown"
 
-        tickers = [t for t in (raw.get("tickers") or []) if isinstance(t, str)]
-        sectors = [s for s in (raw.get("sectors") or []) if isinstance(s, str)]
+        tickers = _as_string_list(raw.get("tickers"))
+        sectors = _as_string_list(raw.get("sectors"))
         if not tickers:
             tickers = list(profile.tickers)
         if not sectors:
