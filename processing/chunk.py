@@ -16,6 +16,13 @@ Provenance fields are copied straight off the parent Document — they must surv
 so synthesis can always cite source + timestamp. Construction lives in `build_chunk` (and
 `materialize_chunks`), keeping the copy in one place so no chunker repeats it — mirroring how
 Document construction lives in the normalizer rather than on the dataclass.
+
+`ordinal` and `section_label` restore the metadata dependency flagged by the Retrieval Pipeline
+spec: retrieval's citation phase needs both on every chunk's Chroma metadata. `ordinal` is the
+same 0-based position already encoded in `chunk_id` ("{document_id}#{ordinal}"), now also stored
+directly so callers don't have to parse it back out. `section_label` is the detected header text
+for a section chunk (e.g. "RISK FACTORS"); it is `None` for chunkers with no header concept
+(paragraph, fixed) or for a header-less preamble section.
 """
 
 from __future__ import annotations
@@ -38,6 +45,7 @@ class Chunk:
     # --- identity ---
     chunk_id: str  # deterministic: parent document id + "#" + ordinal
     document_id: str  # parent Document.id, for traceability back to the raw store
+    ordinal: int  # 0-based position within the parent document; also encoded in chunk_id
     # --- content ---
     text: str
     full_span: Span  # whole chunk's bounds in the parent body (embedding/retrieval)
@@ -50,6 +58,8 @@ class Chunk:
     published_date: datetime
     # --- lifecycle ---
     chunked_at: str  # ISO 8601 timestamp of when this chunk was created
+    # --- structure (section chunker only; None elsewhere) ---
+    section_label: str | None = None  # detected header text, e.g. "RISK FACTORS"
 
 
 def _now_iso() -> str:
@@ -64,16 +74,19 @@ def build_chunk(
     full_span: Span,
     highlight_span: Span,
     chunked_at: str | None = None,
+    section_label: str | None = None,
 ) -> Chunk:
     """Assemble one Chunk, copying citation provenance off the parent Document.
 
     `ordinal` is the chunk's 0-based position within the document; combined with the parent
     id it yields the deterministic `chunk_id` (e.g. "8f3c2a…e1#0"). `chunked_at` is injectable
-    so callers (and tests) can pin the stamp; it defaults to now (UTC).
+    so callers (and tests) can pin the stamp; it defaults to now (UTC). `section_label` is the
+    detected header text for a section chunk; `None` for chunkers with no header concept.
     """
     return Chunk(
         chunk_id=f"{document.id}#{ordinal}",
         document_id=document.id,
+        ordinal=ordinal,
         text=text,
         full_span=full_span,
         highlight_span=highlight_span,
@@ -83,6 +96,7 @@ def build_chunk(
         tier=document.tier,
         published_date=document.published_date,
         chunked_at=chunked_at or _now_iso(),
+        section_label=section_label,
     )
 
 
@@ -93,6 +107,7 @@ def materialize_chunks(
     base: int = 0,
     start_ordinal: int = 0,
     chunked_at: str | None = None,
+    section_label: str | None = None,
 ) -> list[Chunk]:
     """Turn strategy-produced span plans into Chunks with correct offsets and ordinals.
 
@@ -100,7 +115,9 @@ def materialize_chunks(
     strategy planned over*. `base` shifts them into absolute parent-body coordinates (0 for a
     whole-body pass; the section start when a chunker splits a sub-section), and `start_ordinal`
     continues chunk numbering across sub-passes. The chunk text is sliced from the parent body
-    by the absolute span, so it always matches `full_span` exactly.
+    by the absolute span, so it always matches `full_span` exactly. `section_label` applies to
+    every chunk produced by this call — correct because each call plans over a single section
+    (or the whole body, where there is no section to label).
     """
     chunks: list[Chunk] = []
     for offset, (full_span, highlight_span) in enumerate(plans):
@@ -115,6 +132,7 @@ def materialize_chunks(
                 full,
                 highlight,
                 chunked_at=chunked_at,
+                section_label=section_label,
             )
         )
     return chunks

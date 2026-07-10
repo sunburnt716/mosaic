@@ -37,6 +37,13 @@ class TestChunkSection:
             "The company faces risks."
         )
 
+    def test_section_label_is_header_text(self, fake_tokenizer):
+        body = "RISK FACTORS\nThe company faces risks. Markets are volatile.\n"
+        doc = make_document(body=body, document_type="filing")
+        chunk = chunk_section(doc)[0]
+        assert chunk.section_label == "RISK FACTORS"
+        assert chunk.ordinal == 0
+
     def test_no_headers_is_single_section(self, fake_tokenizer):
         body = "Just some plain prose without any section headers to be found here.\n"
         chunks = chunk_section(make_document(body=body, document_type="filing"))
@@ -49,6 +56,8 @@ class TestChunkSection:
         assert len(chunks) == 2
         assert chunks[0].text.startswith("Intro prose")
         assert chunks[1].text.startswith("RISK FACTORS")
+        assert chunks[0].section_label is None
+        assert chunks[1].section_label == "RISK FACTORS"
 
     def test_oversized_section_falls_back_to_fixed(self, fake_tokenizer):
         body = "OVERVIEW\n" + " ".join(f"t{i}" for i in range(600)) + "\n"
@@ -56,7 +65,10 @@ class TestChunkSection:
         chunks = chunk_section(doc, max_section_tokens=100, fallback_strategy="fixed")
         assert len(chunks) > 1
         assert [c.chunk_id for c in chunks] == [f"f#{i}" for i in range(len(chunks))]
+        assert [c.ordinal for c in chunks] == list(range(len(chunks)))
         assert chunks[0].text.startswith("OVERVIEW")
+        # Sub-chunks from the fallback split are still part of the OVERVIEW section.
+        assert all(c.section_label == "OVERVIEW" for c in chunks)
 
     def test_empty_body_yields_no_chunks(self, fake_tokenizer):
         assert chunk_section(make_document(body="", document_type="filing")) == []

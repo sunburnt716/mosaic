@@ -40,6 +40,11 @@ class TestChunkFixed:
             make_document(id="d", body=_BODY), chunk_size=4, overlap=1, chunked_at="t"
         )
         assert [c.chunk_id for c in chunks] == ["d#0", "d#1", "d#2"]
+        assert [c.ordinal for c in chunks] == [0, 1, 2]
+
+    def test_section_label_is_none(self, fake_tokenizer):
+        chunks = chunk_fixed(make_document(body=_BODY), chunk_size=4, overlap=1, chunked_at="t")
+        assert all(c.section_label is None for c in chunks)
 
     def test_body_smaller_than_window_is_one_chunk(self, fake_tokenizer):
         chunks = chunk_fixed(make_document(body="alpha beta gamma"), chunked_at="t")

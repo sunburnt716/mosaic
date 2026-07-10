@@ -20,6 +20,17 @@ class TestBuildChunk:
         chunk = build_chunk(doc, 3, "text", (0, 4), (0, 4), chunked_at="t")
         assert chunk.chunk_id == "deadbeef#3"
         assert chunk.document_id == "deadbeef"
+        assert chunk.ordinal == 3
+
+    def test_section_label_defaults_to_none(self):
+        chunk = build_chunk(make_document(), 0, "text", (0, 4), (0, 4), chunked_at="t")
+        assert chunk.section_label is None
+
+    def test_section_label_passed_through(self):
+        chunk = build_chunk(
+            make_document(), 0, "text", (0, 4), (0, 4), chunked_at="t", section_label="RISK FACTORS"
+        )
+        assert chunk.section_label == "RISK FACTORS"
 
     def test_provenance_copied_from_document(self):
         published = datetime(2026, 6, 30, 12, 0)
@@ -65,6 +76,18 @@ class TestMaterializeChunks:
         assert chunks[0].highlight_span == (4, 5)
         assert chunks[0].text == "456"
         assert chunks[0].chunk_id.endswith("#2")
+        assert chunks[0].ordinal == 2
 
     def test_empty_plans_yield_no_chunks(self):
         assert materialize_chunks(make_document(), [], chunked_at="t") == []
+
+    def test_section_label_applies_to_every_chunk_in_call(self):
+        doc = make_document(body="0123456789")
+        plans = [((0, 4), (0, 2)), ((4, 10), (4, 6))]
+        chunks = materialize_chunks(doc, plans, chunked_at="t", section_label="RISK FACTORS")
+        assert [c.section_label for c in chunks] == ["RISK FACTORS", "RISK FACTORS"]
+
+    def test_section_label_defaults_to_none(self):
+        doc = make_document(body="0123456789")
+        chunks = materialize_chunks(doc, [((0, 4), (0, 2))], chunked_at="t")
+        assert chunks[0].section_label is None

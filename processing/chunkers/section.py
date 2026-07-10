@@ -8,8 +8,10 @@ vocabulary Phase 0 types with) and emits one chunk per section — except a sect
 embed well, which is recursively broken with a fallback strategy (paragraph by default, fixed
 on request).
 
-`highlight_span` is the first sentence *after* the header line (the Phase 1 heuristic). Section
-labels are noted here but are not yet a formal Chunk field — a documented Phase 1 non-goal.
+`highlight_span` is the first sentence *after* the header line (the Phase 1 heuristic). Each
+chunk's detected header text is stamped onto `Chunk.section_label`, including sub-chunks from
+an oversized section's fallback split (they are still part of that section); `None` only for a
+header-less preamble section.
 """
 
 from __future__ import annotations
@@ -51,6 +53,13 @@ def _split_sections(text: str) -> list[_Section]:
     return sections
 
 
+def _section_label(text: str, start: int, content_start: "int | None") -> str | None:
+    """Return the header text for a section, or None for a header-less preamble."""
+    if content_start is None:
+        return None
+    return text[start:content_start].strip()
+
+
 def _fallback_plans(strategy: str, text: str, max_section_tokens: int) -> list[tuple[Span, Span]]:
     """Break an oversized section using the configured fallback strategy."""
     if strategy == "fixed":
@@ -72,6 +81,7 @@ def chunk_section(
     ordinal = 0
     for start, end, content_start in _split_sections(body):
         segment = body[start:end]
+        label = _section_label(body, start, content_start)
         if len(token_spans(segment)) > max_section_tokens:
             plans = _fallback_plans(fallback_strategy, segment, max_section_tokens)
         else:
@@ -80,7 +90,12 @@ def chunk_section(
             hl_from = (content_start - start) if content_start is not None else 0
             plans = [(full, select_highlight_span(segment, start=hl_from))]
         new = materialize_chunks(
-            document, plans, base=start, start_ordinal=ordinal, chunked_at=chunked_at
+            document,
+            plans,
+            base=start,
+            start_ordinal=ordinal,
+            chunked_at=chunked_at,
+            section_label=label,
         )
         chunks.extend(new)
         ordinal += len(new)

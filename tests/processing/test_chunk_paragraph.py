@@ -56,3 +56,9 @@ class TestChunkParagraph:
 
     def test_empty_body_yields_no_chunks(self, fake_tokenizer):
         assert chunk_paragraph(make_document(body="")) == []
+
+    def test_section_label_is_none(self, fake_tokenizer):
+        body = "para one has words.\n\npara two has words."
+        chunks = chunk_paragraph(make_document(body=body), min_paragraph_tokens=1)
+        assert all(c.section_label is None for c in chunks)
+        assert [c.ordinal for c in chunks] == list(range(len(chunks)))
