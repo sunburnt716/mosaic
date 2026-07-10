@@ -19,7 +19,13 @@ engine** (downstream of storage) is also underway: Phase 0 (document-type infere
 validation) and Phase 1 (chunking — Documents → `Chunk`s by inferred `document_type`)
 are in place; see "Processing layer" below. Ingestion and processing were built as two
 parallel workstreams and merged — see "Document schema: two type fields" below for the
-one contract point where that merge required a deliberate reconciliation.
+one contract point where that merge required a deliberate reconciliation. The
+**retrieval engine** (`retrieval/`, downstream of Chroma) is now also built end to end —
+all five phases of the Retrieval Pipeline spec (router → search → rerank → cluster →
+output); see "Retrieval engine" below. It was built **ahead of** processing Phase 2
+(embeddings) and Phase 3 (Chroma write), which don't exist yet — retrieval is implemented
+and tested against the `chromadb.Collection` interface via fakes/fixtures, not a live
+collection; see that section's dependency-gap note before assuming it runs end to end today.
 
 ## Core principles (always)
 - **Structure mirrors the pipeline.** File/function layout follows data flow,
@@ -36,6 +42,11 @@ one contract point where that merge required a deliberate reconciliation.
 - Groq / Llama 3.1 8B (light: classify/route/borderline dedup);
   Gemini Flash (synthesis)
 - ruff (lint + format); pytest (tests)
+- `sentence-transformers`, `groq`, `chromadb` are real deps now (retrieval's Phase 1
+  query embedding + classification, Phase 2 vector search). The first two are
+  lazy-imported behind `processing/utils/embedding.py` / `retrieval/router.py` and
+  injectable in tests, same pattern as `feedparser`/`transformers` — the offline suite
+  needs none of the three installed.
 
 ## Commands
 ```bash
@@ -46,6 +57,14 @@ ruff format .                                        # format
 pytest                                               # run tests
 # run: <fill in once an entrypoint exists>
 ```
+
+## Metrics
+`Metrics.md` (repo root) is the running log of measured outcomes per phase — latency,
+accuracy, cost, corroboration counts — feeding resume bullets and an ADR trail later.
+Append real numbers there when a phase is benchmarked; write `not measured` rather than
+guessing, and never invent precision. Most retrieval-engine rows are still `not measured`
+as of this writing — the engine is built and unit-tested but has no live Chroma
+collection or Groq key to benchmark against yet.
 
 ## Conventions
 - One embedding model per Chroma collection — never mix models in a collection.
@@ -184,6 +203,73 @@ different questions:
 - **Pure, no I/O.** Chunking takes in-memory Documents and returns Chunks. The offline
   test suite injects a word-level fake tokenizer (`tests/processing/conftest.py`) so it
   never downloads MiniLM or imports `transformers`.
+- **`Chunk` now carries `ordinal` and `section_label`.** Originally deferred as a Phase 1
+  non-goal, then restored because the Retrieval Pipeline spec calls their absence a
+  citation-metadata blocker. `ordinal` is stamped on every chunk; `section_label` is the
+  detected header text for section chunks (including sub-chunks from an oversized
+  section's fallback split) and stays `None` for paragraph/fixed chunks and header-less
+  preambles — that's a legitimate content property, not missing data (see retrieval
+  engine's `citation_fields_present` note below).
+
+## Retrieval engine
+`retrieval/` (sibling top-level package of `ingestion/` and `processing/`) implements the
+Retrieval Pipeline spec end to end: user query → ranked, clustered chunks → a typed
+`RetrievalOutput` for the (not-yet-built) Generation Pipeline. Five phases, one module
+each, all pure/injectable and unit-tested offline against fakes:
+
+`router.py` (`QueryRouter`) → `search.py` (`VectorSearch`) → `rerank.py` (`Ranker`) →
+`cluster.py` (`StoryClusterer`) → `output.py` (`assemble_retrieval_output`). Shared
+dataclasses live in `contracts.py` (`RoutingResult`, `RetrievedChunk`, `StoryCluster`,
+`UserProfile`).
+
+**Locked decisions, as implemented:**
+- **Metadata filter runs before ANN search.** `search.build_where_clause` combines
+  `ticker $in` and `published_epoch $gte` with `$and`; returns `None` (not `{}`) when
+  routing carries no constraints, since Chroma treats `where={}` as invalid.
+- **Tier is a label, never a ranking lever.** `rerank.final_score` never references
+  `RetrievedChunk.tier` — pinned by a test asserting a more-relevant Tier 3 chunk
+  outranks a less-relevant Tier 1 one, the spec's own example.
+- **Static, hand-tuned re-rank weights**, all named constants in `rerank.py`:
+  `final_score = 0.5*relevance + 0.3*recency + 0.2*profile_bias`. `profile_bias` only
+  applies its ticker-match term (`TICKER_MATCH_BIAS`) — the sector-match term
+  (`SECTOR_MATCH_BIAS`) is a documented no-op, since `RetrievedChunk`'s field set has no
+  sector to compare against.
+- **L3 clustering reuses ingestion's dedup logic directly**, not a reimplementation:
+  `cluster.py` imports `cosine_similarity` and `L3_SIMILARITY_THRESHOLD` from
+  `ingestion.pipeline.dedup` (both made public there specifically for this reuse — they
+  were `_cosine_similarity`/module-private before). **Note the spec-text discrepancy**:
+  the Retrieval Pipeline spec's prose says "~0.92 cosine"; the actual, reused constant is
+  `0.85`. Confirmed deliberately — reuse the real constant, not the approximation.
+- **Query embedding uses the same model as the corpus.** `processing/utils/embedding.py`
+  is the one place that model (`sentence-transformers/all-MiniLM-L6-v2`, matching the
+  Phase 1 chunk-sizing tokenizer) is named — lazy-loaded and cached, mirroring
+  `processing/utils/tokenization.py`. `router.py`'s default embedder and the (not yet
+  built) Phase 2 corpus embedder must both call through here; never load MiniLM
+  independently elsewhere.
+
+**Deviations from the spec's literal field lists** (both additive, both necessary —
+documented here so they're not mistaken for drift):
+- **`RetrievedChunk.embedding`** (optional, default `None`) isn't in the spec's Phase 2
+  output code block, but Phase 4's own non-goal ("no new embedding model — reuse existing
+  chunk vectors") presupposes chunk vectors are available somewhere between Phase 2 and
+  Phase 4, and there's nowhere else for them to live. `VectorSearch` requests embeddings
+  from Chroma explicitly (`include=[..., "embeddings"]` — omitted by default) and
+  populates this field; a chunk with no embedding becomes its own singleton cluster in
+  Phase 4 rather than raising.
+- **`citation_fields_present` checks `ordinal` only, not `section_label`.** `ordinal` is
+  stamped on every chunk by construction, so its absence is a real degradation signal.
+  `section_label` is legitimately `None` for paragraph/fixed chunks by design (no section
+  concept for articles/tweets) — requiring it universally would make the flag false for
+  almost every non-filing-heavy result set, which isn't a useful signal.
+
+**Dependency gap (read before assuming retrieval runs live):** processing Phase 2
+(embeddings) and Phase 3 (Chroma write) — the steps that would actually populate a Chroma
+collection — are **not built yet**. Retrieval is implemented and unit-tested against the
+`chromadb.Collection` interface via `FakeChromaCollection` fixtures, and the one
+end-to-end integration test (`tests/retrieval/test_integration.py`) seeds an ephemeral
+in-process Chroma collection itself — it does not depend on the missing phases, but it
+does need network (MiniLM download, Groq API + `GROQ_API_KEY`) and is skipped by default,
+same convention as the ingestion suite's live-network tests.
 
 ## Known gaps
 - **`feedparser` may be unavailable in sandboxed dev environments** (its `sgmllib3k`
@@ -223,6 +309,10 @@ tests/
   test_transforms.py       # per-source transforms (edgar_filing_url exact URL)
   test_engine.py           # end-to-end: dedup branches, 304, transport rejection, drop-and-count
   processing/              # processing layer tests (type inference, validation, chunking)
+  retrieval/               # retrieval layer tests (router, search, rerank, cluster, output)
+    conftest.py               # FakeGroqClient, FakeChromaCollection, fake_query_embedder
+    fixtures.py                # make_routing_result, make_retrieved_chunk, make_story_cluster
+    test_integration.py       # skipped-by-default: full pipeline over a real Chroma collection
 ```
 
 **Fixture-regression convention:** a source's *fixture + expected `Document`s = its regression
