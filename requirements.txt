@@ -4,3 +4,13 @@ requests>=2.31
 # Phase 1 chunking sizes chunks with the MiniLM tokenizer (embedding-aligned). transformers
 # provides AutoTokenizer; the unit suite injects a fake tokenizer and does not need it.
 transformers>=4.0
+# Retrieval Phase 1 embeds the query with the same MiniLM model chunks are (will be) embedded
+# with (processing/utils/embedding.py). Lazily imported; the unit suite injects a fake model.
+sentence-transformers>=3.0
+# Retrieval Phase 1's QueryRouter calls Llama 3.1 8B on Groq. Lazily imported; the unit suite
+# injects a fake client.
+groq>=0.9
+# Retrieval Phase 2 queries the Chroma collection the Extraction Engine (Phase 3, not yet
+# built) writes to. Not yet imported anywhere lazily — only the (skipped-by-default)
+# end-to-end integration test needs it installed.
+chromadb>=0.5
