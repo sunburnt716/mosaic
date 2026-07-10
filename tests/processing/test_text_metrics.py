@@ -12,6 +12,7 @@ from processing.text_metrics import (
     count_paragraphs,
     count_tokens,
     paragraph_spans,
+    sentence_spans,
 )
 
 
@@ -72,6 +73,47 @@ class TestParagraphSpans:
     def test_count_paragraphs_equals_span_count(self):
         for text in ("a\n\nb\n\nc", "one solid block", "l1\nl2", "", "   "):
             assert count_paragraphs(text) == len(paragraph_spans(text))
+
+
+class TestSentenceSpans:
+    def test_splits_on_terminators(self):
+        text = "First sentence. Second sentence! Third one?"
+        assert [text[s:e] for s, e in sentence_spans(text)] == [
+            "First sentence.",
+            "Second sentence!",
+            "Third one?",
+        ]
+
+    def test_does_not_split_mid_abbreviation(self):
+        # The terminator regex only matches '.'/'!'/'?' followed by whitespace-or-end, so it
+        # never splits between "U" and "S" in "U.S." (no whitespace between them). It still
+        # (mis)terminates right after "U.S." itself, since that period IS followed by a space
+        # — a known, pre-existing limitation this refactor carries forward unchanged, not a
+        # true abbreviation-aware sentence boundary.
+        text = "The U.S. market rallied."
+        assert [text[s:e] for s, e in sentence_spans(text)] == ["The U.S.", "market rallied."]
+
+    def test_trailing_text_with_no_terminator_is_final_sentence(self):
+        text = "First sentence. trailing text with no terminator"
+        assert [text[s:e] for s, e in sentence_spans(text)] == [
+            "First sentence.",
+            "trailing text with no terminator",
+        ]
+
+    def test_spans_are_tight_excluding_surrounding_whitespace(self):
+        text = "  First sentence.   Second sentence.  "
+        assert [text[s:e] for s, e in sentence_spans(text)] == [
+            "First sentence.",
+            "Second sentence.",
+        ]
+
+    def test_single_sentence_no_terminator(self):
+        text = "no terminator at all   "
+        assert [text[s:e] for s, e in sentence_spans(text)] == ["no terminator at all"]
+
+    def test_empty_or_whitespace_only_has_no_spans(self):
+        assert sentence_spans("") == []
+        assert sentence_spans("   \n\t ") == []
 
 
 class TestCountFilingMarkers:

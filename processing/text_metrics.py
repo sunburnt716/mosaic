@@ -14,6 +14,10 @@ boundaries defined here (`paragraph_spans`, the offset-returning sibling of
 `count_filing_markers` uses (`FILING_MARKER_PATTERNS`) — so structure is defined once
 and inference, validation, and chunking can never disagree about it.
 
+`sentence_spans` is the same idea one level down: `processing/utils/highlight.py`'s Phase 1
+highlight-span selection and the Generation Pipeline's Phase 5 citation sentence-selection
+both need "where do the sentences start and end" — defined once here so they can't drift.
+
 Everything here is pure: deterministic, side-effect-free, no I/O, and — per the
 Phase 0 hard constraint — no model of any kind. `count_tokens` is a deliberately
 cheap whitespace proxy, not a real tokenizer; heuristics do not need that precision.
@@ -47,6 +51,9 @@ FILING_MARKER_PATTERNS: tuple[re.Pattern[str], ...] = (
 # Paragraphs are normally separated by a blank line. Some sources separate them with a
 # single newline instead, so we fall back to that when no blank-line boundary is found.
 _BLANK_LINE_RE = re.compile(r"\n\s*\n")
+
+# Sentence terminator followed by whitespace or end-of-text (avoids splitting "U.S.").
+_SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$)")
 
 
 def count_tokens(text: str) -> int:
@@ -112,6 +119,31 @@ def count_paragraphs(text: str) -> int:
     `paragraph_spans` so the two share one boundary definition.
     """
     return len(paragraph_spans(text))
+
+
+def sentence_spans(text: str) -> list[tuple[int, int]]:
+    """Return the (start_char, end_char) span of each sentence in `text`.
+
+    A sentence ends at '.', '!', or '?' followed by whitespace or end-of-text (so "U.S."
+    doesn't split mid-abbreviation); a trailing run with no terminator still counts as one
+    final sentence. Each span is trimmed of surrounding whitespace. Empty/whitespace-only
+    text has no sentences.
+    """
+    if not text.strip():
+        return []
+
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    for match in _SENTENCE_END_RE.finditer(text):
+        start, end = _trim_span(text, pos, match.end())
+        if start < end:
+            spans.append((start, end))
+        pos = match.end()
+
+    start, end = _trim_span(text, pos, len(text))
+    if start < end:
+        spans.append((start, end))
+    return spans
 
 
 def count_filing_markers(text: str) -> int:
