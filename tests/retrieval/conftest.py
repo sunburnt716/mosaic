@@ -67,3 +67,32 @@ def fake_query_embedder():
         return [float(len(text)), float(sum(ord(c) for c in text) % 97)]
 
     return _embed
+
+
+class FakeChromaCollection:
+    """Stand-in for a chromadb.Collection: `.query(...)` returns a fixed canned response.
+
+    `response` is the raw dict shape a real Collection.query() returns (ids/distances/
+    metadatas/documents, one inner list per query in the batch). Records the last call's
+    kwargs so tests can assert the where-clause/n_results actually sent.
+    """
+
+    def __init__(self, response: dict):
+        self._response = response
+        self.last_kwargs: dict | None = None
+
+    def query(self, **kwargs):
+        self.last_kwargs = kwargs
+        return self._response
+
+
+def make_query_response(
+    ids: list[str], distances: list[float], metadatas: list[dict], documents: list[str]
+) -> dict:
+    """Build a single-query Chroma query() response from parallel per-chunk lists."""
+    return {
+        "ids": [ids],
+        "distances": [distances],
+        "metadatas": [metadatas],
+        "documents": [documents],
+    }
