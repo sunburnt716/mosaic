@@ -9,6 +9,9 @@ build/
 
 # Runtime state (generated, not config)
 ingestion/config/poll_state.json
+ingestion/config/raw.db
+ingestion/config/seen.db
+data/
 
 # Editors
 .idea/

@@ -36,7 +36,7 @@ import re
 from urllib.parse import quote
 
 from generation.contracts import Citation, GeneratedAnswer, ValidatedClaim
-from processing.text_metrics import sentence_spans
+from extraction.text_metrics import sentence_spans
 from retrieval.contracts import RetrievedChunk, StoryCluster
 
 CONFIDENCE_WARNING_THRESHOLD = 0.30  # >30% dropped triggers the warning

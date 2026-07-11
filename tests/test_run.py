@@ -51,6 +51,7 @@ def make_source(
         url="https://example.com/feed.xml",
         poll_interval=timedelta(minutes=poll_interval_minutes),
         doc_type="article",
+        processing_mode="cold",
         field_mappings={},
         auth={},
         enabled=enabled,

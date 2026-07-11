@@ -228,6 +228,6 @@ class TestDefaultsUseRealSharedInfrastructure:
         assert CitationValidator()._similarity_fn is cosine_similarity
 
     def test_default_embedder_is_the_shared_minilm_embedder(self):
-        from processing.utils.embedding import embed_text
+        from extraction.utils.embedding import embed_text
 
         assert CitationValidator()._embedder is embed_text

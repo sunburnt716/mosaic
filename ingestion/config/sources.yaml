@@ -98,10 +98,11 @@ sources:
     url: https://www.ft.com/markets?format=rss
     poll_interval: "15m"
     doc_type: article
+    processing_mode: hot
     field_mappings: {}
     auth: {}
     expects:
       title: true
       url: true
       body: true
-    enabled: false
+    enabled: true

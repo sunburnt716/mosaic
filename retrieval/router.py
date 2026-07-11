@@ -7,13 +7,13 @@ kept deliberately separate:
 
   - classification + extraction — Llama 3.1 8B on Groq, prompted for JSON-only output
     (no prose, no fences), reusing the structured-output discipline generation will need.
-  - query embedding — the shared MiniLM embedder (processing.utils.embedding), the *same*
+  - query embedding — the shared MiniLM embedder (extraction.utils.embedding), the *same*
     model the corpus is embedded with. Mixing embedding models between query and corpus is
     forbidden (CLAUDE.md's collection invariant); this module never picks its own model.
 
 Both clients are lazily constructed and injectable so the offline unit suite never imports
 `groq` or downloads MiniLM (mirrors the ingestion adapters' lazy `requests`/`feedparser`
-imports and processing.utils.tokenization's lazy tokenizer).
+imports and extraction.utils.tokenization's lazy tokenizer).
 
 Non-goals (per spec): no multi-step query planning or agentic decomposition, no query
 rewriting/expansion.
@@ -25,7 +25,7 @@ import json
 import os
 from typing import Any, Callable
 
-from processing.utils.embedding import embed_text
+from extraction.utils.embedding import embed_text
 from retrieval.contracts import RoutingResult, UserProfile
 
 VALID_INTENTS = {"earnings_deep_dive", "sector_trend", "company_news", "unknown"}

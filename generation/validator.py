@@ -34,7 +34,7 @@ from typing import Callable
 
 from generation.contracts import ParsedClaim, ValidatedClaim
 from ingestion.pipeline.dedup import cosine_similarity
-from processing.utils.embedding import embed_text
+from extraction.utils.embedding import embed_text
 from retrieval.contracts import RetrievedChunk
 
 DIRECT_LOOKUP_CONFIDENCE = 1.0

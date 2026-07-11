@@ -4,7 +4,7 @@ The final pipeline stage — synthesis + citation over the ranked, clustered chu
 produces:
 
 ```
-ingestion → processing → retrieval → [generation] → interfaces
+ingestion → extraction → retrieval → [generation] → interfaces
 ```
 
 Consumes `RetrievalOutput` (from `retrieval/`, a separate top-level package — semantic search,

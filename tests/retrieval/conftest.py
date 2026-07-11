@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from tests.processing.conftest import fake_embedder  # noqa: F401 — re-exported as a fixture
+from tests.extraction.conftest import fake_embedder  # noqa: F401 — re-exported as a fixture
 
 
 class _FakeMessage:

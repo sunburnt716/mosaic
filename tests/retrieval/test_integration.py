@@ -23,7 +23,7 @@ class TestEndToEndRetrieval:
     def test_query_to_retrieval_output_over_real_vectors(self):
         import chromadb
 
-        from processing.utils.embedding import embed_text
+        from extraction.utils.embedding import embed_text
         from retrieval.cluster import StoryClusterer
         from retrieval.contracts import UserProfile
         from retrieval.output import assemble_retrieval_output

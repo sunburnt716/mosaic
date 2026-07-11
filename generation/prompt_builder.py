@@ -26,7 +26,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from generation.contracts import LensDoc
-from processing.text_metrics import count_tokens
+from extraction.text_metrics import count_tokens
 from retrieval.contracts import RetrievedChunk, StoryCluster, UserProfile
 from retrieval.output import RetrievalOutput
 

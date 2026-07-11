@@ -14,24 +14,28 @@ processing (chunk + embed) → Chroma → retrieval (search + re-rank + cluster)
 
 **Currently building:** the ingestion engine is complete — adapters (RSS, REST-JSON),
 normalizer, dedup, quality gate, storage (raw store, seen store, poll state), and the
-concrete `Engine` wired into the scheduler (`run.py`). The **processing extraction
-engine** (downstream of storage) is also underway: Phase 0 (document-type inference +
-validation) and Phase 1 (chunking — Documents → `Chunk`s by inferred `document_type`)
-are in place; see "Processing layer" below. Ingestion and processing were built as two
-parallel workstreams and merged — see "Document schema: two type fields" below for the
-one contract point where that merge required a deliberate reconciliation. The
-**retrieval engine** (`retrieval/`, downstream of Chroma) is now also built end to end —
-all five phases of the Retrieval Pipeline spec (router → search → rerank → cluster →
-output); see "Retrieval engine" below. It was built **ahead of** processing Phase 2
-(embeddings) and Phase 3 (Chroma write), which don't exist yet — retrieval is implemented
-and tested against the `chromadb.Collection` interface via fakes/fixtures, not a live
-collection; see that section's dependency-gap note before assuming it runs end to end today.
-The **generation engine** (`generation/`, downstream of retrieval) is now also built end
-to end — all five phases of the Generation Pipeline spec (prompt assembly → synthesis →
-claim parsing → citation validation → output formatting); see "Generation engine" below.
-Unlike retrieval, generation has no live-network dependency gap: every phase is
-fully offline-testable (Gemini and the semantic-fallback embedder are both injectable),
-so its golden-path integration test runs in CI rather than being skipped.
+concrete `Engine` wired into the scheduler (`run.py`). The **extraction engine**
+(downstream of storage) is also complete through Phase 3: Phase 0 (document-type
+inference + validation), Phase 1 (chunking), Phase 2 (embedding), and Phase 3 (Chroma
+write) are all in place; see "Extraction layer" below. Phase 4 (wiring into the
+scheduler — hot path / cold path) is now wired too. Ingestion and extraction were built
+as two parallel workstreams and merged — see "Document schema: two type fields" below
+for the one contract point where that merge required a deliberate reconciliation, and
+"Package naming" below for how the `processing/` vs `extraction/` naming split was
+resolved. The **retrieval engine** (`retrieval/`, downstream of Chroma) is also built
+end to end — all five phases of the Retrieval Pipeline spec (router → search → rerank →
+cluster → output); see "Retrieval engine" below. It was originally built **ahead of**
+Phase 2 (embeddings) and Phase 3 (Chroma write); both now exist (see above), but
+retrieval hasn't yet been re-verified against a Chroma collection populated by a live
+run of the real extraction pipeline — only against `FakeChromaCollection` fixtures and
+an ephemeral collection the integration test seeds itself. See that section's
+dependency-gap note before assuming it runs end to end today. The **generation engine**
+(`generation/`, downstream of retrieval) is now also built end to end — all five phases
+of the Generation Pipeline spec (prompt assembly → synthesis → claim parsing → citation
+validation → output formatting); see "Generation engine" below. Unlike retrieval,
+generation has no live-network dependency gap: every phase is fully offline-testable
+(Gemini and the semantic-fallback embedder are both injectable), so its golden-path
+integration test runs in CI rather than being skipped.
 
 ## Core principles (always)
 - **Structure mirrors the pipeline.** File/function layout follows data flow,
@@ -87,7 +91,19 @@ collection or Groq key to benchmark against yet.
 - Polling is config-driven and stateful: `SourceConfig.poll_interval` (static, in
   `sources.yaml`) says how often; `PollStateStore` (runtime `poll_state.json`) records
   last-polled time + ETag/Last-Modified for conditional GETs. `run.py` is the single
-  scheduler that reads due-ness; the same scheduler later drives hot-path processing.
+  scheduler that reads due-ness; the same scheduler now also drives hot-path extraction
+  (see "Extraction layer" below) — no second scheduler.
+
+## Data retention (planned, not yet implemented)
+Local stores (`raw.db`, `data/chroma`) are meant to hold recent data only, not accumulate
+indefinitely — stale documents should be automatically purged on a **tier-dependent
+window, roughly 24-48 hours**. Exact per-tier thresholds and which direction (does a
+higher-trust tier get a longer or shorter window?) are still open decisions — not yet
+specified, don't guess a table here until they're pinned down. No deletion code exists
+yet; this is written down now specifically so the decision survives until it's
+implemented. Also flagged: local SQLite/Chroma storage itself may be superseded by a
+server-backed store later — when that lands, this retention logic needs to move with it
+(or be re-decided for whatever replaces `raw.db`), not be reimplemented twice.
 
 ## Ingestion engine
 Complete: `adapters/` (RSS, REST-JSON — format-driven, one implementation per format,
@@ -121,34 +137,68 @@ never per source) → `pipeline/` (`normalizer`, `dedup`, `hashing`, `quality`, 
   before it ever reaches normalize/dedup/store. This is a different layer from the quality
   gate: transport judges the *batch's format*, quality judges *content patterns*.
 - **Runtime deps are real now**: `requirements.txt` has `pyyaml`, `feedparser`, `requests`,
-  `transformers` (chunk-sizing tokenizer). `requirements-dev.txt` has `pytest`,
-  `pytest-mock`, `ruff`. Adapters import `feedparser`/`requests` lazily inside their fetch
-  methods, so the unit suite runs without them installed — only live-network or
-  integration runs need `requirements.txt`.
+  `transformers` (chunk-sizing tokenizer), `chromadb`, `sentence-transformers` (Phase 2/3
+  embedding + vector store). `requirements-dev.txt` has `pytest`, `pytest-mock`, `ruff`.
+  Adapters import `feedparser`/`requests` lazily inside their fetch methods, and
+  `extraction/embedder.py`/`chroma_store.py` import `sentence_transformers`/`chromadb`
+  lazily too, so the unit suite runs without any of them installed — only live-network,
+  real-embedding, or integration runs need `requirements.txt`.
 
-## Processing layer (Extraction Engine)
-The processing layer sits **downstream of storage**: it reads normalized Documents,
+## Extraction layer
+The extraction layer sits **downstream of storage**: it reads normalized Documents,
 infers their type, chunks by type, embeds, and writes vectors to Chroma. It is a
-**separate top-level package** (`processing/`, sibling of `ingestion/`) that ingestion
+**separate top-level package** (`extraction/`, sibling of `ingestion/`) that ingestion
 and query-time retrieval both call into — never logic baked into ingestion.
 
-**Folder rule:** ALL processing logic lives under `processing/`, even the parts that
-run *during* the ingestion window (the hot path). Processing logic is never split
-between `ingestion/` and `processing/`. This keeps the structure clean and avoids
-merge conflicts between the two parallel workstreams.
+**Folder rule:** ALL extraction logic lives under `extraction/`, even the parts that
+run *during* the ingestion window (the hot path). Extraction logic is never split
+between `ingestion/` and `extraction/`. This keeps the structure clean and avoids
+merge conflicts between parallel workstreams.
 
-**Two trigger paths** (wired in later phases, not hardcoded by tier):
-- **Hot path** — server-side, inside the existing single scheduler (`run.py`):
-  high-frequency sources are chunked + embedded right after normalization.
-- **Cold path** — on-demand at query time: a document not yet in Chroma is processed
-  in real time.
+### Package naming: `processing/` vs `extraction/`
+This package was scaffolded twice under two names by parallel workstreams: an earlier
+`processing/` (Phase 0–1 only) and a later `extraction/` that diverged from it — same
+Phase 0–1 logic plus the Phase 2/3 orchestrator (`embedder.py`, `chroma_store.py`,
+`extraction_engine.py`) and a CLI (`extraction/run.py`). The two also disagreed on the
+`Chunk` schema (`identity_key` field, `published_date` type). **`extraction/` was kept
+as canonical; `processing/` was deleted outright, not merged.** Every reference to a
+"processing" package elsewhere in this file (or in code comments/docstrings you may
+still encounter) means `extraction/` — treat `processing/` as a stale name if you see it.
+
+**Two trigger paths**, driven by config, not hardcoded by tier:
+- **Hot path** — inside the existing single scheduler (`ingestion/run.py`): a
+  per-source `SourceConfig.processing_mode` field (`"hot"` | `"cold"`, default `"cold"`)
+  decides whether `ConcreteEngine` extracts a document inline right after it's stored.
+  `ConcreteEngine` never imports `extraction.*` directly — see "Hot path wiring" below
+  for why — instead it calls an injected `on_processed` callback that `run.py` wires up
+  to `extraction_engine.extract()`.
+- **Cold path** — `extraction/cold_path.py`'s `ensure_processed(doc_id, ...)` processes
+  a document on demand (e.g. a query-time cache-miss on Chroma) if it isn't already
+  processed. It's a tested, ready-to-call function; nothing calls it yet because the
+  `retrieval/` layer that would call it on a cache-miss doesn't exist yet (future work).
 The hot/cold split is driven by **processing throughput + per-source cost vs the
 ingestion window**, not by tier number (Tier 0/1 usually hot, Tier 3 usually cold,
-Tier 2 depends on velocity). One scheduler only — no second scheduler.
+Tier 2 depends on velocity) — `processing_mode` is set per source in `sources.yaml`,
+not inferred from `tier`. One scheduler only — no second scheduler.
+
+### Hot path wiring (`ingestion/engine.py` ↔ `extraction/`)
+`tests/test_handoff.py`'s `TestNoDownstreamCoupling` pins a boundary: **`ingestion/`
+must never import `extraction/` (or any downstream stage)** — the raw store is meant to
+be the only seam, since the two halves can run on different clocks. Calling
+`extraction_engine.extract()` straight from `ingestion/engine.py` would violate that.
+Instead, `ConcreteEngine.__init__` takes an optional `on_processed: Callable[[Document],
+None] | None` callback (untyped beyond `Callable` — no import of `extraction.*` in
+`ingestion/`). `ingestion/run.py`'s `main()` — the composition root, not internal
+ingestion logic — builds the actual closure that wires `MiniLMEmbedder` +
+`ChromaVectorStore` + `extract()` and passes it in. This keeps the coupling boundary
+real (verified by the test) while still letting hot-path sources embed inline.
 
 **Phase map:** 0 type inference + validation · 1 chunking (paragraph/section/fixed) ·
 2 embeddings (MiniLM/Gemini — embeddings only, never type detection) · 3 Chroma write ·
-4 wire into the scheduler (hot-path frequency/cost decision) · 5 query-time fallback.
+4 wire into the scheduler (hot path via `SourceConfig.processing_mode` + injected
+callback; cold path via `extraction/cold_path.py`, not yet called by anything) ·
+5 query-time fallback — retrieval layer calling `ensure_processed()` on a cache-miss
+(not yet built).
 
 ### Document schema: two type fields (ingestion + processing reconciliation)
 Ingestion and processing were built as parallel workstreams with their own Document
@@ -186,7 +236,7 @@ different questions:
   `info < warning < degenerate` and `is_valid` is False only for `degenerate`. Even
   degenerate docs flow through; warnings are recorded for per-source quality monitoring.
   `unknown` docs are *deferred* (a warning, still valid).
-- **Shared `processing/text_metrics.py`** owns token/paragraph/marker counting so
+- **Shared `extraction/text_metrics.py`** owns token/paragraph/marker counting so
   inference and validation can never drift on those definitions (no duplicated logic).
 
 ### Phase 1 decisions (chunking)
@@ -205,13 +255,13 @@ different questions:
   detection reuses `text_metrics.FILING_MARKER_PATTERNS`. Structure is defined once so
   inference, validation, and chunking never disagree.
 - **MiniLM tokenizer for chunk *sizing* (deliberate exception).** Phase 1 sizes/slices
-  chunks with the real MiniLM tokenizer (`processing/utils/tokenization.py`, lazy-loaded +
+  chunks with the real MiniLM tokenizer (`extraction/utils/tokenization.py`, lazy-loaded +
   cached; adds `transformers`), so window sizes align with the Phase 2 embedder. This is a
   *distinct* notion of "token" from `text_metrics.count_tokens` (the Phase-0 whitespace
   proxy) and is the one place a model appears before Phase 2 — chunk sizing only, never
   type detection (that stays heuristic). Chosen over the whitespace proxy on purpose.
 - **Pure, no I/O.** Chunking takes in-memory Documents and returns Chunks. The offline
-  test suite injects a word-level fake tokenizer (`tests/processing/conftest.py`) so it
+  test suite injects a word-level fake tokenizer (`tests/extraction/conftest.py`) so it
   never downloads MiniLM or imports `transformers`.
 - **`Chunk` now carries `ordinal` and `section_label`.** Originally deferred as a Phase 1
   non-goal, then restored because the Retrieval Pipeline spec calls their absence a
@@ -221,8 +271,26 @@ different questions:
   preambles — that's a legitimate content property, not missing data (see retrieval
   engine's `citation_fields_present` note below).
 
+### Phase 2/3 decisions (embedding + Chroma write)
+- **`extraction/embedder.py`**: `Embedder` is a `Protocol` (`model_name` + `embed()`);
+  `MiniLMEmbedder` lazy-loads `sentence-transformers/all-MiniLM-L6-v2` on first call so
+  import stays fast and the unit suite can inject a `FakeEmbedder` without the dependency
+  installed. `model_name` is the canonical slug stamped into the Chroma collection name —
+  enforces the one-model-per-collection rule from Conventions above.
+- **`extraction/chroma_store.py`**: `ChromaVectorStore` wraps a `chromadb.ClientAPI`.
+  Collection name encodes the embedder's `model_name`; writing with a mismatched model
+  raises `ModelMismatchError` at write time. Collections are always created with cosine
+  distance (matches MiniLM's L2-normalized vectors). On upsert, existing chunks sharing
+  the new batch's `identity_key` are deleted first — this is the L2-update stale-chunk
+  eviction so retrieval never surfaces a superseded document version.
+- **`extraction/extraction_engine.py`**: `extract(documents, embedder, chroma_store,
+  source_hints=...)` runs Phase 0→3 per document with per-document isolation (one bad
+  document is caught, logged, and counted in `ExtractionResult.errors`; the rest
+  continue). This is the one function both the hot path and cold path call — same
+  function, different caller, per the Phase map above.
+
 ## Retrieval engine
-`retrieval/` (sibling top-level package of `ingestion/` and `processing/`) implements the
+`retrieval/` (sibling top-level package of `ingestion/` and `extraction/`) implements the
 Retrieval Pipeline spec end to end: user query → ranked, clustered chunks → a typed
 `RetrievalOutput` for the (not-yet-built) Generation Pipeline. Five phases, one module
 each, all pure/injectable and unit-tested offline against fakes:
@@ -250,12 +318,14 @@ dataclasses live in `contracts.py` (`RoutingResult`, `RetrievedChunk`, `StoryClu
   were `_cosine_similarity`/module-private before). **Note the spec-text discrepancy**:
   the Retrieval Pipeline spec's prose says "~0.92 cosine"; the actual, reused constant is
   `0.85`. Confirmed deliberately — reuse the real constant, not the approximation.
-- **Query embedding uses the same model as the corpus.** `processing/utils/embedding.py`
+- **Query embedding uses the same model as the corpus.** `extraction/utils/embedding.py`
   is the one place that model (`sentence-transformers/all-MiniLM-L6-v2`, matching the
-  Phase 1 chunk-sizing tokenizer) is named — lazy-loaded and cached, mirroring
-  `processing/utils/tokenization.py`. `router.py`'s default embedder and the (not yet
-  built) Phase 2 corpus embedder must both call through here; never load MiniLM
-  independently elsewhere.
+  Phase 1 chunk-sizing tokenizer) is named for single-string query embedding — lazy-loaded
+  and cached, mirroring `extraction/utils/tokenization.py`. `router.py`'s default embedder
+  calls through here. Note this is a distinct code path from the batch corpus embedder,
+  `extraction/embedder.py`'s `MiniLMEmbedder` — both hardcode the same model ID
+  independently rather than one delegating to the other; keep them in sync by hand if the
+  model ever changes.
 
 **Deviations from the spec's literal field lists** (both additive, both necessary —
 documented here so they're not mistaken for drift):
@@ -272,17 +342,19 @@ documented here so they're not mistaken for drift):
   concept for articles/tweets) — requiring it universally would make the flag false for
   almost every non-filing-heavy result set, which isn't a useful signal.
 
-**Dependency gap (read before assuming retrieval runs live):** processing Phase 2
-(embeddings) and Phase 3 (Chroma write) — the steps that would actually populate a Chroma
-collection — are **not built yet**. Retrieval is implemented and unit-tested against the
-`chromadb.Collection` interface via `FakeChromaCollection` fixtures, and the one
-end-to-end integration test (`tests/retrieval/test_integration.py`) seeds an ephemeral
-in-process Chroma collection itself — it does not depend on the missing phases, but it
-does need network (MiniLM download, Groq API + `GROQ_API_KEY`) and is skipped by default,
-same convention as the ingestion suite's live-network tests.
+**Dependency gap (read before assuming retrieval runs live):** Phase 2 (embeddings) and
+Phase 3 (Chroma write) now exist (`extraction/embedder.py`, `extraction/chroma_store.py`
+— see "Extraction layer" below), so the collection retrieval queries can, in principle,
+be populated by a real ingest → extract run. What hasn't happened yet is proving that
+end to end: retrieval is still only unit-tested against the `chromadb.Collection`
+interface via `FakeChromaCollection` fixtures, and the one integration test
+(`tests/retrieval/test_integration.py`) seeds its own ephemeral in-process Chroma
+collection rather than one written by `extraction_engine.extract()`. It does need
+network (MiniLM download, Groq API + `GROQ_API_KEY`) and is skipped by default, same
+convention as the ingestion suite's live-network tests.
 
 ## Generation engine
-`generation/` (sibling top-level package of `ingestion/`, `processing/`, `retrieval/`)
+`generation/` (sibling top-level package of `ingestion/`, `extraction/`, `retrieval/`)
 implements the Generation Pipeline spec end to end: `RetrievalOutput` → prompt → Gemini
 synthesis → parsed claims → grounding-validated claims → a typed `GeneratedAnswer` for the
 user-facing surface. Five phases, one module each:
@@ -300,7 +372,7 @@ user-facing surface. Five phases, one module each:
   plain word-overlap heuristic (Jaccard over punctuation-stripped, lowercased word sets)
   against `text_metrics.sentence_spans` — the same sentence-boundary definition Phase 1
   chunking's highlight-span selection uses (extracted there specifically for this reuse;
-  see "Processing layer" → Phase 1 and `processing/utils/highlight.py`).
+  see "Extraction layer" → Phase 1 and `extraction/utils/highlight.py`).
 - **Tier is context, never a filter.** `formatter.py` cites the best-grounded claim
   regardless of its source's tier; Tier 2/3 sources get an inline skepticism note appended
   to the `Citation.source` label, never suppression.
@@ -384,8 +456,12 @@ tests/
   test_quality.py          # quality gate: flags, configurable thresholds, QualityReport/stats
   test_quality_fixtures.py # gate regression: degenerate feed warns, healthy EDGAR silent
   test_transforms.py       # per-source transforms (edgar_filing_url exact URL)
-  test_engine.py           # end-to-end: dedup branches, 304, transport rejection, drop-and-count
-  processing/              # processing layer tests (type inference, validation, chunking)
+  test_engine.py           # end-to-end: dedup branches, 304, transport rejection, drop-and-count,
+                            # hot-path extraction call + status update
+  test_handoff.py          # ingestion -> extraction boundary: raw store is the only seam,
+                            # ingestion/ never imports extraction/
+  extraction/               # extraction layer tests (type inference, validation, chunking,
+                            # embedding, Chroma write, cold path)
   retrieval/               # retrieval layer tests (router, search, rerank, cluster, output)
     conftest.py               # FakeGroqClient, FakeChromaCollection, fake_query_embedder
     fixtures.py                # make_routing_result, make_retrieved_chunk, make_story_cluster

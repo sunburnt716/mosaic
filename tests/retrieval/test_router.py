@@ -125,9 +125,9 @@ class TestQueryEmbedding:
         assert result.query_embedding == fake_query_embedder("hello world")
 
     def test_embedding_uses_same_model_as_corpus(self, fake_embedder):
-        # processing.utils.embedding.embed_text is the default embedder — the same function
+        # extraction.utils.embedding.embed_text is the default embedder — the same function
         # the (future) corpus embedder must use, per the one-model-per-collection rule.
-        from processing.utils.embedding import embed_text
+        from extraction.utils.embedding import embed_text
 
         client = make_groq_client(intent="unknown", tickers=[], sectors=[], time_window_days=30)
         router = QueryRouter(client=client)

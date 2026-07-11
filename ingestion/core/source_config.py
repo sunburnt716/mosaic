@@ -56,6 +56,12 @@ _VALID_ADAPTERS: frozenset[str] = frozenset({"rss", "rest_json"})
 # downstream: filings are chunked by section, articles by paragraph.
 _VALID_DOC_TYPES: frozenset[str] = frozenset({"article", "filing"})
 
+# Valid values for processing_mode, which decides whether a source's documents are
+# extracted (chunked + embedded) inline during ingestion ("hot") or deferred to
+# on-demand query-time processing ("cold"). See CLAUDE.md "Extraction layer" for the
+# hot/cold split rationale — this is a per-source config knob, never inferred from tier.
+_VALID_PROCESSING_MODES: frozenset[str] = frozenset({"hot", "cold"})
+
 # Tier boundaries. Tier is stamped at ingest and must never be inferred later.
 _TIER_MIN = 0
 _TIER_MAX = 3
@@ -121,6 +127,9 @@ class SourceConfig:
                      loader accepts it here so tests and dev configs can supply it.
       doc_type     — controls chunking: "article" → by paragraph,
                      "filing" → by section.
+      processing_mode — "hot" (extract inline right after ingestion) or "cold"
+                     (defer to on-demand query-time processing). Defaults to "cold".
+                     Config-driven, never inferred from tier.
       params       — catch-all for adapter-specific knobs not covered above
                      (e.g. pagination config, result filters).
       headers      — HTTP headers added to every request for this source.
@@ -137,6 +146,7 @@ class SourceConfig:
     url: str
     poll_interval: timedelta
     doc_type: Literal["article", "filing"]
+    processing_mode: Literal["hot", "cold"]
     field_mappings: dict[str, str]
     auth: dict[str, Any]
     enabled: bool
@@ -216,6 +226,15 @@ def _validate_entry(entry: dict[str, Any], index: int) -> SourceConfig:
         )
     doc_type: Literal["article", "filing"] = raw_doc_type  # type: ignore[assignment]
 
+    # --- processing_mode (optional, defaults to "cold") ---
+    raw_processing_mode = entry.get("processing_mode", "cold")
+    if raw_processing_mode not in _VALID_PROCESSING_MODES:
+        raise ValueError(
+            f"{label}: 'processing_mode' must be one of "
+            f"{sorted(_VALID_PROCESSING_MODES)}, got {raw_processing_mode!r}."
+        )
+    processing_mode: Literal["hot", "cold"] = raw_processing_mode  # type: ignore[assignment]
+
     # --- field_mappings (optional, defaults to {}) ---
     field_mappings = entry.get("field_mappings", {})
     if not isinstance(field_mappings, dict):
@@ -283,6 +302,7 @@ def _validate_entry(entry: dict[str, Any], index: int) -> SourceConfig:
         url=str(url).strip(),
         poll_interval=poll_interval,
         doc_type=doc_type,
+        processing_mode=processing_mode,
         field_mappings=dict(field_mappings),
         auth=dict(auth),
         enabled=enabled,

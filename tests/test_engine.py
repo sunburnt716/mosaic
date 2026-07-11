@@ -303,3 +303,81 @@ class TestEnginePerRecordDrop:
         good_doc = normalize(good, rss_config, datetime.now(timezone.utc))
         assert raw.get_document(good_doc.id) is not None
         assert seen.get_hash(f"{rss_config.name}::bad-2") is None
+
+
+# ---------------------------------------------------------------------------
+# Hot-path extraction: processing_mode="hot" invokes the on_processed callback
+# ---------------------------------------------------------------------------
+
+
+class TestEngineHotPath:
+    def test_hot_mode_source_invokes_on_processed(self, monkeypatch, stores):
+        seen, raw, poll = stores
+        calls = []
+        engine = ConcreteEngine(raw, seen, poll, on_processed=calls.append)
+        config = make_source_config(name="test-reuters", adapter="rss", processing_mode="hot")
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+
+        engine.process_source(config)
+
+        assert len(calls) == 1
+        assert calls[0].id == normalize(item, config, datetime.now(timezone.utc)).id
+
+    def test_cold_mode_source_never_invokes_on_processed(self, monkeypatch, stores):
+        seen, raw, poll = stores
+        calls = []
+        engine = ConcreteEngine(raw, seen, poll, on_processed=calls.append)
+        config = make_source_config(name="test-reuters", adapter="rss", processing_mode="cold")
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+
+        engine.process_source(config)
+
+        assert calls == []
+
+    def test_no_on_processed_configured_hot_mode_is_noop(self, monkeypatch, stores):
+        # engine fixture has no on_processed wired; hot mode must not raise.
+        seen, raw, poll = stores
+        engine = ConcreteEngine(raw, seen, poll)
+        config = make_source_config(name="test-reuters", adapter="rss", processing_mode="hot")
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+
+        engine.process_source(config)  # must not raise
+
+        doc = normalize(item, config, datetime.now(timezone.utc))
+        assert raw.get_document(doc.id) is not None
+
+    def test_on_processed_failure_is_caught_and_counted(self, monkeypatch, stores, caplog):
+        seen, raw, poll = stores
+
+        def _boom(doc):
+            raise RuntimeError("simulated extraction failure")
+
+        engine = ConcreteEngine(raw, seen, poll, on_processed=_boom)
+        config = make_source_config(name="test-reuters", adapter="rss", processing_mode="hot")
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+
+        with caplog.at_level(logging.ERROR):
+            engine.process_source(config)  # must not raise despite on_processed failing
+
+        # The document is still stored — a hot-path failure doesn't undo ingestion.
+        doc = normalize(item, config, datetime.now(timezone.utc))
+        assert raw.get_document(doc.id) is not None
+        assert "Hot-path extraction failed" in caplog.text
+
+    def test_on_processed_not_called_for_l1_duplicate(self, monkeypatch, stores):
+        seen, raw, poll = stores
+        calls = []
+        engine = ConcreteEngine(raw, seen, poll, on_processed=calls.append)
+        config = make_source_config(name="test-reuters", adapter="rss", processing_mode="hot")
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+
+        engine.process_source(config)  # first pass: NEW, extracted
+        calls.clear()
+        engine.process_source(config)  # second pass: exact L1 duplicate
+
+        assert calls == []
