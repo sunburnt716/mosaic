@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Iterable
 
 from extraction.engine import chunk_document
+from extraction.tickers import extract_tickers, get_ticker_registry
 from extraction.type_inference import infer_document_type
 from extraction.validation import validate_document
 
@@ -89,6 +90,11 @@ def _process_one(
     if validation.warnings:
         for w in validation.warnings:
             logger.warning("[%s/%s] %s", doc.source_name, doc.id, w)
+
+    # Phase 0 (cont.): ticker enrichment — symbol-list matching over title+body, so
+    # Phase 1's chunks can carry a ticker for retrieval's metadata filter.
+    matched_tickers = extract_tickers(f"{typed_doc.title}\n{typed_doc.body}", get_ticker_registry())
+    typed_doc = dataclasses.replace(typed_doc, tickers=matched_tickers)
 
     # Phase 1: chunk by document type.
     chunks: list[Chunk] = chunk_document(typed_doc)

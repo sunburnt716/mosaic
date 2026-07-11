@@ -49,6 +49,16 @@ class TestBuildChunk:
         assert chunk.published_date == "2026-06-30T12:00:00+00:00"
         assert chunk.identity_key == "reuters::abc123"
 
+    def test_ticker_defaults_to_none_when_document_has_no_tickers(self):
+        chunk = build_chunk(make_document(tickers=[]), 0, "text", (0, 4), (0, 4), chunked_at="t")
+        assert chunk.ticker is None
+
+    def test_ticker_copied_from_first_document_ticker(self):
+        chunk = build_chunk(
+            make_document(tickers=["NVDA", "AMD"]), 0, "text", (0, 4), (0, 4), chunked_at="t"
+        )
+        assert chunk.ticker == "NVDA"
+
     def test_chunked_at_injectable(self):
         chunk = build_chunk(make_document(), 0, "t", (0, 1), (0, 1), chunked_at="STAMP")
         assert chunk.chunked_at == "STAMP"

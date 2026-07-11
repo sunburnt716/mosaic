@@ -143,6 +143,37 @@ class TestCitationMetadataSurvival:
 
 
 # ---------------------------------------------------------------------------
+# Ticker enrichment (Phase 0) reaches Chroma via Chunk.ticker
+# ---------------------------------------------------------------------------
+
+
+class TestTickerEnrichment:
+    def setup_method(self):
+        self.client = _fresh_client()
+        self.store = _make_store(self.client)
+
+    def test_matched_ticker_reaches_chroma_metadata(self, monkeypatch):
+        import extraction.tickers as tickers_module
+
+        monkeypatch.setattr(tickers_module, "_registry", {"NVDA": ["Nvidia"]})
+        doc = make_document(body=f"Nvidia earnings beat expectations. {ARTICLE_BODY}")
+        extract([doc], FakeEmbedder(), self.store)
+        col = self.client.get_collection(self.store.collection_name)
+        result = col.get(include=["metadatas"])
+        assert result["metadatas"][0]["ticker"] == "NVDA"
+
+    def test_no_match_omits_ticker_key(self, monkeypatch):
+        import extraction.tickers as tickers_module
+
+        monkeypatch.setattr(tickers_module, "_registry", {"NVDA": ["Nvidia"]})
+        doc = make_document(body=ARTICLE_BODY)
+        extract([doc], FakeEmbedder(), self.store)
+        col = self.client.get_collection(self.store.collection_name)
+        result = col.get(include=["metadatas"])
+        assert "ticker" not in result["metadatas"][0]
+
+
+# ---------------------------------------------------------------------------
 # Per-document isolation
 # ---------------------------------------------------------------------------
 

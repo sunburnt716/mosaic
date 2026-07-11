@@ -134,6 +134,16 @@ class TestToMetadata:
         # chunk (section_label=None by design) must omit the key rather than write None.
         assert "section_label" not in _to_metadata(_make_chunk())
 
+    def test_ticker_present_when_set(self):
+        doc = make_document(tickers=["NVDA"])
+        chunk = build_chunk(doc, 0, "x", (0, 1), (0, 1), chunked_at="t")
+        assert _to_metadata(chunk)["ticker"] == "NVDA"
+
+    def test_ticker_key_omitted_when_none(self):
+        # Most chunks have no ticker match (starter registry, advisory-only) — omit
+        # rather than write None, same rule as section_label.
+        assert "ticker" not in _to_metadata(_make_chunk())
+
 
 # ---------------------------------------------------------------------------
 # ChromaVectorStore: collection creation and naming

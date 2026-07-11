@@ -83,6 +83,11 @@ def _to_metadata(chunk: "Chunk") -> dict[str, str | int | float | bool]:
     # already treats a missing key the same as an explicit None.
     if chunk.section_label is not None:
         metadata["section_label"] = chunk.section_label
+    # ticker is None whenever Phase 0's ticker enrichment found no match (most chunks,
+    # today, since the registry is a starter set) — same omit-rather-than-write-None
+    # rule as section_label. retrieval's build_where_clause filters on this key.
+    if chunk.ticker is not None:
+        metadata["ticker"] = chunk.ticker
     return metadata
 
 

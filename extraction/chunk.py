@@ -23,6 +23,13 @@ same 0-based position already encoded in `chunk_id` ("{document_id}#{ordinal}"),
 directly so callers don't have to parse it back out. `section_label` is the detected header text
 for a section chunk (e.g. "RISK FACTORS"); it is `None` for chunkers with no header concept
 (paragraph, fixed) or for a header-less preamble section.
+
+`ticker` is copied from `document.tickers[0]` (or `None` if the enrichment step in
+extraction_engine.py found none) — a deliberate simplification for a Document tagged with
+multiple tickers, since `RetrievedChunk.ticker` (retrieval's own contract, locked) is a
+single optional string, not a list. A multi-ticker article is filterable only by its
+first-listed ticker today; splitting one Chunk across several tickers would need a real
+schema change on the retrieval side, out of scope here.
 """
 
 from __future__ import annotations
@@ -62,6 +69,8 @@ class Chunk:
     chunked_at: str  # ISO 8601 timestamp of when this chunk was created
     # --- structure (section chunker only; None elsewhere) ---
     section_label: str | None = None  # detected header text, e.g. "RISK FACTORS"
+    # --- enrichment (Phase 0 ticker extraction; None if no match) ---
+    ticker: str | None = None  # document.tickers[0] — see module docstring for the caveat
 
 
 def _now_iso() -> str:
@@ -100,6 +109,7 @@ def build_chunk(
         published_date=document.published_date.isoformat(),
         chunked_at=chunked_at or _now_iso(),
         section_label=section_label,
+        ticker=document.tickers[0] if document.tickers else None,
     )
 
 
