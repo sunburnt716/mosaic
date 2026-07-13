@@ -12,6 +12,7 @@ ingestion/config/poll_state.json
 ingestion/config/raw.db
 ingestion/config/seen.db
 data/
+evals/out/
 
 # Editors
 .idea/

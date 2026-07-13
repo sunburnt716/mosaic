@@ -30,7 +30,7 @@ from typing import Any, Callable, Optional
 
 from extraction.utils.embedding import embed_text
 from generation.claim_parser import ClaimParser
-from generation.contracts import GeneratedAnswer, LensDoc
+from generation.contracts import GeneratedAnswer, LensDoc, ValidatedClaim
 from generation.formatter import AnswerFormatter
 from generation.prompt_builder import PromptBuilder
 from generation.validator import CitationValidator
@@ -52,11 +52,17 @@ class QueryResult:
     `answer` is the user-facing `GeneratedAnswer`; it is None only in retrieval-only mode
     (`synthesizer=None`), where `routing` and `retrieval` are still populated so the caller
     can show what was retrieved even when synthesis was skipped.
+
+    `validated_claims` is the raw grounding-gate output (before the formatter drops the
+    ungrounded ones) — an observability hook for the eval harness and a future UI debug
+    view, so callers can see grounded-vs-total without re-running generation. Also None in
+    retrieval-only mode.
     """
 
     routing: RoutingResult
     retrieval: RetrievalOutput
     answer: Optional[GeneratedAnswer]
+    validated_claims: Optional[list[ValidatedClaim]] = None
 
 
 def route_offline(
@@ -142,4 +148,9 @@ def answer(
     validated = CitationValidator().validate(claims, chunks_by_id)
     generated = AnswerFormatter().format(validated, chunks_by_id, clusters)
 
-    return QueryResult(routing=routing, retrieval=retrieval_output, answer=generated)
+    return QueryResult(
+        routing=routing,
+        retrieval=retrieval_output,
+        answer=generated,
+        validated_claims=validated,
+    )

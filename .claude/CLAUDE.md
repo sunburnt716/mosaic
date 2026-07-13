@@ -78,6 +78,7 @@ python -m ingestion.run  --once --chroma-path data/chroma   # fetch + normalize 
 python -m extraction.run --once --chroma-path data/chroma   # cold-path backfill of unprocessed docs
 python -m tools.inspect_pipeline                            # read-only stage-by-stage report
 python -m query.run "your question here"                    # ask a question (read path end to end)
+python -m evals.run --json evals/out/run-01.json            # answerability eval (buckets + rates)
 ```
 `query/run.py` degrades to whatever's configured: routing uses Groq when `GROQ_API_KEY` is
 set (else an offline embedding+profile router, or force it with `--offline-router`), and
@@ -92,6 +93,19 @@ Append real numbers there when a phase is benchmarked; write `not measured` rath
 guessing, and never invent precision. Most retrieval-engine rows are still `not measured`
 as of this writing — the engine is built and unit-tested but has no live Chroma
 collection or Groq key to benchmark against yet.
+
+**This is a metrics-driven project — standing convention (per the user's explicit request).**
+Treat `Metrics.md` as load-bearing, not decorative:
+- **Reference it at the start of any metrics-relevant prompt.** When a task touches
+  answerability, latency, cost, accuracy, source coverage, or "should we broaden X?",
+  open `Metrics.md` first, say what it currently records, and frame the work against it.
+- **Record measured outcomes as you produce them.** When a task yields a real number
+  (a benchmark, an eval run, a before/after delta), append a dated row in `Metrics.md`'s
+  format. Never fabricate — if it wasn't measured this session, leave it `not measured`.
+- **The answerability eval (`evals/`) is the primary metrics instrument** for the
+  broaden-sources decision. Its two headline rates (answerable-in-scope,
+  out-of-scope-abstention) and their deltas after adding feeds are exactly the résumé
+  numbers `Metrics.md` exists to capture. See "Evaluation harness" below.
 
 ## Conventions
 - One embedding model per Chroma collection — never mix models in a collection.
@@ -463,6 +477,36 @@ call the future `interfaces/` layer makes; the UI shouldn't re-wire the nine sta
   Chroma collection, picks router (Groq vs offline) and synthesizer (Gemini vs none) from
   what's configured, prints routing + retrieval + the cited answer, and on a missing
   collection/key tells the operator exactly which command or env var to add.
+- **`QueryResult.validated_claims`** (optional, None in retrieval-only mode) exposes the
+  raw grounding-gate output before the formatter drops ungrounded claims — an observability
+  hook the eval harness reads to count grounded-vs-total (and a future UI debug view).
+
+## Evaluation harness
+`evals/` (sibling tooling, drives the `query/` read path) turns "should I broaden sources?"
+from a hunch into a measured decision. `evals/questions.yaml` is a labeled set of ~30
+representative questions, each tagged `intent` (news-synthesis / point-in-time-statistic /
+ticker-specific / out-of-scope) and `expected` (answer / abstain / redirect).
+`evals/harness.py` runs each through `query.engine.answer()` and records, per question:
+**top1/top3 similarity** (the MAX raw cosine at rank 1 and rank 3 — deliberately *not* the
+within-query mean, which is the `retrieval_confidence` gate that under-reported strong-but-
+narrow matches), whether **synthesis produced a citable answer**, and whether the
+**reject-don't-repair validator passed** (≥1 grounded claim).
+
+**Buckets are the point** — each question sorts into one the operator can act on:
+- `working` — behaved as its `expected` label wanted.
+- `in-scope-but-thin` — expected `answer`, produced no citable answer ⇒ **add feeds**
+  (and re-run to measure the delta); no router change helps.
+- `out-of-scope-router-missed` — expected `abstain`/`redirect`, answered anyway ⇒
+  **router work**; no new sources help.
+
+The two headline rates — **answerable-in-scope** and **out-of-scope-abstention** — and
+their before/after deltas as feeds are added are the résumé line, and go in `Metrics.md`.
+`evals/run.py` is the CLI (same router/synthesizer degradation as `query/run.py`); it
+writes a timestamped JSON with `--json` so runs can be diffed. **Synthesis needs a Gemini
+key** — in retrieval-only mode every question lands in the `retrieval-only` bucket with
+`has_signal` reported instead, enough to eyeball the corpus but not to populate the rates.
+Harness logic is fully fake-tested (`tests/evals/test_harness.py`); the experiment itself
+is operator-run, not in CI.
 
 ## Known gaps
 - **`feedparser` may be unavailable in sandboxed dev environments** (its `sgmllib3k`
@@ -516,6 +560,8 @@ tests/
     test_integration.py       # golden-path: RetrievalOutput fixture -> GeneratedAnswer, runs in CI
   query/                   # query engine tests (read-path orchestration)
     test_engine.py            # answer() over fake collection/router/synthesizer; retrieval-only + full chain
+  evals/                   # answerability eval harness tests
+    test_harness.py           # max-not-mean similarity, bucket assignment, headline rates (fakes)
 ```
 
 **Fixture-regression convention:** a source's *fixture + expected `Document`s = its regression

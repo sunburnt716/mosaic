@@ -82,6 +82,30 @@ Keep raw benchmark output out of this file — link to the test or commit instea
 
 ---
 
+## Answerability eval (`evals/`)
+
+The measured basis for the broaden-sources decision. Run: `python -m evals.run --json ...`
+(needs GEMINI_API_KEY + google-genai for the headline rates; retrieval-only otherwise).
+Labeled set: `evals/questions.yaml` (~30 questions). Log one dated block per run so deltas
+after adding feeds are visible.
+
+- eval set size / composition: 31 questions — news-synthesis, point-in-time-statistic,
+  ticker-specific, out-of-scope (answer / abstain / redirect)
+- **answerable-in-scope rate** (of in-scope questions, % with a citable answer): _not run yet_
+- **out-of-scope-abstention rate** (of out-of-scope questions, % correctly declined): _not run yet_
+- bucket counts (working / in-scope-but-thin / out-of-scope-router-missed): _not run yet_
+- avg top1 similarity, in-scope (max-pooled, not mean): _not run yet_
+
+```
+### <date> — evals/answerability (baseline, N sources)
+- answerable-in-scope: __%   out-of-scope-abstention: __%
+- buckets: working __ / in-scope-but-thin __ / out-of-scope-router-missed __
+- avg top1 (in-scope): ____   method: python -m evals.run, collection=<...>, synthesis=Gemini
+- notes: <which intents fell into in-scope-but-thin => which feeds to add next>
+```
+
+---
+
 ## Resume-bullet candidates (draft from measured rows above)
 
 Fill these in only once backed by a measured value in this file. Each should name
@@ -96,3 +120,6 @@ a system property and a number.
       Groq for classification, Gemini Flash for synthesis)."
 - [ ] "Implemented cross-outlet corroboration clustering surfacing story
       confidence across ___ average sources."
+- [ ] "Built a labeled answerability eval that turned source-coverage decisions into
+      measured deltas — added ___ feeds and moved answerable-in-scope from ___% to ___%
+      while out-of-scope abstention held at ___%."

@@ -122,6 +122,7 @@ class TestAnswerRetrievalOnly:
         )
         assert isinstance(result, QueryResult)
         assert result.answer is None
+        assert result.validated_claims is None  # no synthesis => no grounding gate output
         assert result.retrieval.chunk_count == 2
         assert result.routing.intent == "sector_trend"
 
@@ -159,6 +160,9 @@ class TestAnswerFullChain:
         assert len(result.answer.citations) == 1
         assert result.answer.citations[0].tier == 2  # FT / doc-a
         assert "euro area" in result.answer.prose
+        # validated_claims exposes the grounding-gate output for observability (eval harness).
+        assert result.validated_claims is not None
+        assert any(c.is_grounded for c in result.validated_claims)
 
     def test_prompt_reaches_synthesizer(self):
         synth = FakeSynthesizer("CLAIM: x\nSOURCE_CHUNK_ID: doc-a#0\nCONFIDENCE: low\n---")
