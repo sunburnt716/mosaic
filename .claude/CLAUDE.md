@@ -35,7 +35,10 @@ of the Generation Pipeline spec (prompt assembly → synthesis → claim parsing
 validation → output formatting); see "Generation engine" below. Unlike retrieval,
 generation has no live-network dependency gap: every phase is fully offline-testable
 (Gemini and the semantic-fallback embedder are both injectable), so its golden-path
-integration test runs in CI rather than being skipped.
+integration test runs in CI rather than being skipped. The **query engine** (`query/`,
+the read-path composition root) now ties retrieval and generation together into a single
+`answer(query, profile) -> QueryResult` call, with a `query/run.py` CLI harness to drive
+one question against the live Chroma collection; see "Query engine" below.
 
 ## Core principles (always)
 - **Structure mirrors the pipeline.** File/function layout follows data flow,
@@ -69,8 +72,18 @@ pip install -r requirements.txt                      # install dependencies
 ruff check .                                         # lint
 ruff format .                                        # format
 pytest                                               # run tests
-# run: <fill in once an entrypoint exists>
+
+# Run the pipeline (write path, then inspect, then ask):
+python -m ingestion.run  --once --chroma-path data/chroma   # fetch + normalize + (hot) extract
+python -m extraction.run --once --chroma-path data/chroma   # cold-path backfill of unprocessed docs
+python -m tools.inspect_pipeline                            # read-only stage-by-stage report
+python -m query.run "your question here"                    # ask a question (read path end to end)
 ```
+`query/run.py` degrades to whatever's configured: routing uses Groq when `GROQ_API_KEY` is
+set (else an offline embedding+profile router, or force it with `--offline-router`), and
+synthesis uses Gemini when `GEMINI_API_KEY` + `google-genai` are present (else it stops
+after retrieval and prints the retrieved context). So a no-key run still exercises the whole
+retrieval half live.
 
 ## Metrics
 `Metrics.md` (repo root) is the running log of measured outcomes per phase — latency,
@@ -420,6 +433,37 @@ injectable, so `tests/generation/test_integration.py`'s golden-path test runs in
 hand-built `RetrievalOutput` fixture, matching the spec's own "Consumes: RetrievalOutput
 from the Retrieval Pipeline" framing.
 
+## Query engine
+`query/` (sibling top-level package) is the **read-path composition root** — what
+`ingestion/run.py`'s `main()` is to the write path. `query/engine.py`'s
+`answer(query, profile, *, collection, router, synthesizer=None, ...) -> QueryResult` is
+the one place the query-time stages are wired in order: retrieval (router → search →
+rerank → cluster → output) then generation (prompt → synthesize → parse → validate →
+format). It's pure orchestration — the Chroma `collection`, `router`, and `synthesizer`
+are all injected, never constructed here — so it's fully fake-testable
+(`tests/query/test_engine.py`), same discipline as the phases it composes. This is the
+call the future `interfaces/` layer makes; the UI shouldn't re-wire the nine stages.
+
+**Locked decisions, as implemented:**
+- **`answer()` returns `QueryResult(routing, retrieval, answer)`**, not the bare
+  `GeneratedAnswer` the earlier report sketched — a justified richer return so callers
+  (the CLI, later the UI's debug view) can see routing + retrieval, not only the final
+  prose. `.answer` is the `GeneratedAnswer`; a UI that only wants prose reads that field.
+- **`synthesizer=None` runs retrieval only** (`.answer` is None, `.routing`/`.retrieval`
+  populated). This keeps all orchestration in one module: the CLI's no-Gemini path is a
+  parameter, not a duplicated retrieval loop. It's also the graceful-degradation seam the
+  harness leans on.
+- **`OfflineRouter` / `route_offline` are the no-Groq fallback** (`query/engine.py`):
+  embed the query with the shared MiniLM embedder, take tickers/sectors from the profile,
+  leave `intent="unknown"`. Router-shaped so `answer()` treats it and the real
+  `QueryRouter` identically. It cannot infer intent or extract tickers from query text —
+  only semantic search + the profile's declared filter survive.
+- **`query/run.py` is a read-only operator harness**, the counterpart to
+  `tools/inspect_pipeline.py`. It never fetches/extracts/writes; it opens the existing
+  Chroma collection, picks router (Groq vs offline) and synthesizer (Gemini vs none) from
+  what's configured, prints routing + retrieval + the cited answer, and on a missing
+  collection/key tells the operator exactly which command or env var to add.
+
 ## Known gaps
 - **`feedparser` may be unavailable in sandboxed dev environments** (its `sgmllib3k`
   dependency can fail to build without full PyPI network access). Adapters import it
@@ -470,6 +514,8 @@ tests/
   generation/              # generation layer tests (prompt, synthesis, parsing, validation, format)
     fixtures.py                # make_lens_doc, make_parsed_claim, make_validated_claim, ...
     test_integration.py       # golden-path: RetrievalOutput fixture -> GeneratedAnswer, runs in CI
+  query/                   # query engine tests (read-path orchestration)
+    test_engine.py            # answer() over fake collection/router/synthesizer; retrieval-only + full chain
 ```
 
 **Fixture-regression convention:** a source's *fixture + expected `Document`s = its regression
