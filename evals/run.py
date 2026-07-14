@@ -14,6 +14,9 @@ Router/synthesizer selection mirrors query/run.py: Groq routing when GROQ_API_KE
 + google-genai are present (else retrieval-only, and the full buckets need a re-run with a
 key). Read-only: never fetches, extracts, or writes to the corpus. Log the summary to
 Metrics.md afterward (see CLAUDE.md "Metrics").
+
+GROQ_API_KEY / GEMINI_API_KEY are read from the environment; a `.env` file at the project
+root is loaded automatically if present (see `.env.example`), same as query/run.py.
 """
 
 from __future__ import annotations
@@ -27,9 +30,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+# override=False (default): a real environment variable always wins over the file.
+load_dotenv(_PROJECT_ROOT / ".env")
 
 _DEFAULT_COLLECTION = "mosaic_minilm-l6-v2"
 

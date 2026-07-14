@@ -7,6 +7,9 @@ __pycache__/
 dist/
 build/
 
+# Secrets — real values live in .env (untracked); .env.example is the committed template.
+.env
+
 # Runtime state (generated, not config)
 ingestion/config/poll_state.json
 ingestion/config/raw.db

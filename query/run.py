@@ -19,6 +19,11 @@ Degrades on purpose so you can test with whatever you have configured:
 
 Read-only: never fetches, extracts, or writes. Run ingestion + extraction first (see the
 two entry points in tools/inspect_pipeline.py), then ask a question here.
+
+GROQ_API_KEY / GEMINI_API_KEY are read from the environment (never from a config file —
+see ingestion/config/sources.yaml's own comment on secrets). A `.env` file at the project
+root is loaded automatically if present (see `.env.example`); an already-set real
+environment variable always wins over the file.
 """
 
 from __future__ import annotations
@@ -29,11 +34,17 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Resolve `import query` / `import retrieval` however this file is launched (module or
 # script), mirroring tools/inspect_pipeline.py's path bootstrap.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+# Populate os.environ from .env before anything below reads GROQ_API_KEY/GEMINI_API_KEY.
+# override=False (the default): a real environment variable always wins over the file.
+load_dotenv(_PROJECT_ROOT / ".env")
 
 # Keep in sync with tools/inspect_pipeline.py and extraction/embedder.py's model_name.
 _DEFAULT_COLLECTION = "mosaic_minilm-l6-v2"

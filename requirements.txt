@@ -19,3 +19,8 @@ chromadb>=1.0
 # (`from google import genai`). Lazily imported; the unit suite (including the golden-path
 # integration test) injects a fake client, so this is never imported offline.
 google-genai>=1.0
+# query/run.py and evals/run.py load GROQ_API_KEY/GEMINI_API_KEY from a .env file at the
+# project root (see .env.example). Imported eagerly (it's not a heavy dep like the ones
+# above) but only by those two CLI entrypoints — not by any package the offline test suite
+# imports, so it doesn't need to be installed to run pytest.
+python-dotenv>=1.0
