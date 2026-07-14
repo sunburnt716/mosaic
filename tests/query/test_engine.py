@@ -176,3 +176,105 @@ class TestAnswerFullChain:
         )
         assert len(synth.prompts) == 1
         assert "doc-a#0" in synth.prompts[0]
+
+
+class _WhereAwareCollection:
+    """Empty when a where-clause is present, non-empty otherwise (to exercise fallback)."""
+
+    def _empty(self):
+        return {
+            "ids": [[]],
+            "distances": [[]],
+            "metadatas": [[]],
+            "documents": [[]],
+            "embeddings": [[]],
+        }
+
+    def _one(self):
+        return {
+            "ids": [["doc-x#0"]],
+            "distances": [[0.1]],
+            "metadatas": [
+                [
+                    {
+                        "source_name": "FT",
+                        "tier": 2,
+                        "published_epoch": _EPOCH,
+                        "url": "u",
+                        "ordinal": 0,
+                    }
+                ]
+            ],
+            "documents": [["fallback pool text"]],
+            "embeddings": [[[0.1, 0.2, 0.3]]],
+        }
+
+    def query(self, **kwargs):
+        return self._empty() if "where" in kwargs else self._one()
+
+
+class TestObservabilityFields:
+    def test_trace_populates_prompt_and_raw_synthesis(self):
+        reply = "CLAIM: x\nSOURCE_CHUNK_ID: doc-a#0\nCONFIDENCE: low\n---"
+        result = answer(
+            "q",
+            UserProfile(),
+            collection=_fake_collection(),
+            router=FakeRouter(),
+            synthesizer=FakeSynthesizer(reply),
+            now=_NOW,
+            trace=True,
+        )
+        assert result.prompt is not None and "doc-a#0" in result.prompt
+        assert result.raw_synthesis == reply
+
+    def test_default_leaves_trace_fields_none(self):
+        result = answer(
+            "q",
+            UserProfile(),
+            collection=_fake_collection(),
+            router=FakeRouter(),
+            synthesizer=FakeSynthesizer("CLAIM: x\nSOURCE_CHUNK_ID: doc-a#0\nCONFIDENCE: low\n---"),
+            now=_NOW,
+        )
+        assert result.prompt is None
+        assert result.raw_synthesis is None
+
+    def test_trace_builds_prompt_in_retrieval_only_mode(self):
+        result = answer(
+            "q",
+            UserProfile(),
+            collection=_fake_collection(),
+            router=FakeRouter(),
+            synthesizer=None,
+            now=_NOW,
+            trace=True,
+        )
+        assert result.answer is None
+        assert result.prompt is not None  # built for inspection even without Gemini
+        assert result.raw_synthesis is None
+
+    def test_filter_fallback_flag_threaded(self):
+        # Router carries a time-window (where is not None); filtered query returns empty ->
+        # search falls back to unfiltered -> the flag surfaces on QueryResult.
+        result = answer(
+            "q",
+            UserProfile(),
+            collection=_WhereAwareCollection(),
+            router=FakeRouter(),
+            synthesizer=None,
+            now=_NOW,
+        )
+        assert result.filter_fallback is True
+        assert result.retrieval.chunk_count == 1  # resurrected pool
+
+    def test_no_fallback_flag_when_filtered_nonempty(self):
+        result = answer(
+            "q",
+            UserProfile(),
+            collection=_fake_collection(),
+            router=FakeRouter(),
+            synthesizer=None,
+            now=_NOW,
+        )
+        assert result.filter_fallback is False

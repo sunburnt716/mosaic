@@ -7,6 +7,12 @@ constraint deciding what's *eligible* (ticker, date window); the query embedding
 *ranks*, via cosine similarity computed only within that filtered subset. The filter runs first
 — cheaper and more accurate than searching the whole collection and filtering after.
 
+Empty-result fallback: a `where` clause that matches *zero* chunks (e.g. the router extracts a
+ticker no document is tagged with) must not starve retrieval into silence. When the filtered
+query returns nothing, `search()` drops the clause and re-queries unfiltered — see `search` for
+why the trigger is the empty result set, not the absence of a filter, and why relevance still
+governs abstention downstream.
+
 `collection` is any object shaped like a `chromadb.Collection` (`.query(query_embeddings=,
 where=, n_results=) -> dict` with `ids`/`distances`/`metadatas`/`documents` keys, one inner list
 per query). Injected rather than constructed here so tests never need a real Chroma client, and
@@ -24,6 +30,7 @@ Non-goals (per spec): no hybrid BM25/keyword search, no cross-collection queryin
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -31,6 +38,8 @@ from retrieval.contracts import RetrievedChunk, RoutingResult
 
 DEFAULT_N_RESULTS = 20
 _SECONDS_PER_DAY = 86400
+
+_log = logging.getLogger(__name__)
 
 
 def build_where_clause(routing: RoutingResult, now_epoch: int | None = None) -> dict | None:
@@ -88,10 +97,17 @@ def _to_retrieved_chunks(raw: dict[str, Any]) -> list[RetrievedChunk]:
 
 
 class VectorSearch:
-    """Phase 2: RoutingResult -> metadata-filtered, semantically-ranked RetrievedChunks."""
+    """Phase 2: RoutingResult -> metadata-filtered, semantically-ranked RetrievedChunks.
+
+    `last_filter_fallback` records whether the most recent `search()` had to drop its
+    `where` clause because the filtered set was empty (see `search`); read it for
+    observability (the eval/trace harness) — it is per-instance, and `answer()` builds a
+    fresh `VectorSearch` per query, so there is no cross-query bleed.
+    """
 
     def __init__(self, collection: Any):
         self._collection = collection
+        self.last_filter_fallback = False
 
     def search(
         self,
@@ -108,4 +124,26 @@ class VectorSearch:
         if where is not None:
             kwargs["where"] = where
         raw = self._collection.query(**kwargs)
-        return _to_retrieved_chunks(raw)
+        chunks = _to_retrieved_chunks(raw)
+
+        # Filter-starvation fallback. The trigger is the EMPTY RESULT SET, not the absence
+        # of a filter: a router-extracted ticker like MSFT is a found-filter-with-zero-
+        # survivors (nothing in the corpus carries that tag yet), the exact case that
+        # starves retrieval before ANN runs. Drop the where-clause and re-query so the pool
+        # is resurrected. Relevance still governs downstream — the unfiltered pool's top1
+        # similarity remains the abstention judge, so a genuinely-thin fallback still
+        # correctly abstains; this restores the material, it does not force an answer.
+        self.last_filter_fallback = False
+        if where is not None and not chunks:
+            _log.debug(
+                "filter_fallback: where-clause matched 0 chunks; re-querying unfiltered "
+                "(tickers=%s, time_window_days=%s)",
+                routing.tickers,
+                routing.time_window_days,
+            )
+            self.last_filter_fallback = True
+            kwargs.pop("where")
+            raw = self._collection.query(**kwargs)
+            chunks = _to_retrieved_chunks(raw)
+
+        return chunks

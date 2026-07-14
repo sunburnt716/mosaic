@@ -331,6 +331,15 @@ dataclasses live in `contracts.py` (`RoutingResult`, `RetrievedChunk`, `StoryClu
 - **Metadata filter runs before ANN search.** `search.build_where_clause` combines
   `ticker $in` and `published_epoch $gte` with `$and`; returns `None` (not `{}`) when
   routing carries no constraints, since Chroma treats `where={}` as invalid.
+- **Empty-filter fallback.** A `where` clause that matches *zero* chunks (e.g. the router
+  extracts a ticker no document is tagged with — real today, since ticker coverage is ~0%)
+  would starve retrieval before ANN. `VectorSearch.search` re-queries unfiltered when the
+  filtered set comes back empty — the trigger is the **empty result set, not the absence of
+  a filter** (a found-filter-with-zero-survivors is exactly the starving case). It surfaces
+  `last_filter_fallback` for observability. Relevance still governs downstream: the
+  resurrected pool's `top1` is the abstention judge, so a genuinely-thin fallback still
+  correctly abstains — the fallback restores material, it doesn't force an answer. (Deeper
+  fix deferred: make `ticker` a soft rerank signal once coverage is real, per Known gaps.)
 - **Tier is a label, never a ranking lever.** `rerank.final_score` never references
   `RetrievedChunk.tier` — pinned by a test asserting a more-relevant Tier 3 chunk
   outranks a less-relevant Tier 1 one, the spec's own example.
@@ -492,21 +501,36 @@ within-query mean, which is the `retrieval_confidence` gate that under-reported 
 narrow matches), whether **synthesis produced a citable answer**, and whether the
 **reject-don't-repair validator passed** (≥1 grounded claim).
 
-**Buckets are the point** — each question sorts into one the operator can act on:
-- `working` — behaved as its `expected` label wanted.
-- `in-scope-but-thin` — expected `answer`, produced no citable answer ⇒ **add feeds**
-  (and re-run to measure the delta); no router change helps.
-- `out-of-scope-router-missed` — expected `abstain`/`redirect`, answered anyway ⇒
-  **router work**; no new sources help.
+**Buckets are behavior-first — keyed on `(n, top1, cited)`, NOT the question's label.** An
+earlier version keyed the bucket on `expected`, which made the summary a frozen re-print of
+the label distribution the moment citation broke uniformly (every `answer` row → "thin",
+every decline row → "working"). The bucket now names what the *system did*:
+- `no-candidates` — `n == 0`. A filter/retrieval bug (e.g. a ticker filter matching nothing),
+  **never** "thin". Observable even without Gemini, so it catches filter starvation early.
+- `cited` — produced an answer with ≥1 citation.
+- `strong-uncited` — `top1 >= floor` but no citation. A **strong** match the citation path
+  failed to ground: a generation bug, not coverage. The smoking gun.
+- `thin` — `n > 0`, `top1 < floor`, no citation. Genuinely weak ⇒ **add feeds**.
+- `retrieval-only` — synthesis skipped (no Gemini); citation unobservable.
 
-The two headline rates — **answerable-in-scope** and **out-of-scope-abstention** — and
-their before/after deltas as feeds are added are the résumé line, and go in `Metrics.md`.
-`evals/run.py` is the CLI (same router/synthesizer degradation as `query/run.py`); it
-writes a timestamped JSON with `--json` so runs can be diffed. **Synthesis needs a Gemini
-key** — in retrieval-only mode every question lands in the `retrieval-only` bucket with
-`has_signal` reported instead, enough to eyeball the corpus but not to populate the rates.
-Harness logic is fully fake-tested (`tests/evals/test_harness.py`); the experiment itself
-is operator-run, not in CI.
+A separate **`verdict`** cross-references the bucket against `expected` (correct-answer /
+correct-decline / missed-answer / over-answered) — the interpretation layer stays out of the
+bucket. `summarize` computes two headline rates: **answerable-in-scope** (of in-scope
+questions, how many are `cited`) and **out-of-scope abstention**, counted as *meaningful only
+where retrieval surfaced strong content* (`top1 >= floor` — a decline on `n == 0` is vacuous).
+It also raises **`citation_path_suspect`** when any **in-scope** `strong-uncited` rows exist
+(an out-of-scope strong-uncited is a correct refusal, not a bug) — a loud banner that the
+headline rates are untrustworthy until the citation path is fixed. `evals/run.py --trace <id>`
+is the diagnostic instrument: it dumps routing, `filter_fallback`, offered CHUNK_IDs, the raw
+Gemini output, parsed claims, and per-claim validation reasons, plus a one-line pointer to the
+likely fix (marker / prose / mangled-IDs / semantic-below-threshold).
+
+These rates and their before/after deltas as feeds are added are the résumé line, and go in
+`Metrics.md`. `evals/run.py` is the CLI (same router/synthesizer degradation as `query/run.py`;
+`--json` writes a timestamped results file for diffing). **Synthesis needs a Gemini key** — in
+retrieval-only mode citation-dependent buckets/rates are blank (only `no-candidates` + the
+retrieval signal are observable). Harness logic is fully fake-tested
+(`tests/evals/test_harness.py`); the experiment itself is operator-run, not in CI.
 
 ## Known gaps
 - **`feedparser` may be unavailable in sandboxed dev environments** (its `sgmllib3k`

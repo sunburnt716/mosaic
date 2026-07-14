@@ -57,12 +57,24 @@ class QueryResult:
     ungrounded ones) — an observability hook for the eval harness and a future UI debug
     view, so callers can see grounded-vs-total without re-running generation. Also None in
     retrieval-only mode.
+
+    `filter_fallback` records whether Phase 2 search had to drop its metadata `where` clause
+    because the filtered set was empty (see retrieval/search.py) — so a caller can tell an
+    `n` that climbed via the unfiltered fallback apart from a natively-filtered one.
+
+    `prompt` and `raw_synthesis` are the assembled Gemini prompt and Gemini's verbatim
+    response — the trace instrument's raw material for diagnosing the citation path (marker
+    vs prose vs mangled IDs). Populated only when `answer(..., trace=True)`; None otherwise,
+    since they can be large and normal callers don't need them.
     """
 
     routing: RoutingResult
     retrieval: RetrievalOutput
     answer: Optional[GeneratedAnswer]
     validated_claims: Optional[list[ValidatedClaim]] = None
+    filter_fallback: bool = False
+    prompt: Optional[str] = None
+    raw_synthesis: Optional[str] = None
 
 
 def route_offline(
@@ -117,25 +129,40 @@ def answer(
     lens: Optional[list[LensDoc]] = None,
     now: Optional[datetime] = None,
     n_results: int = DEFAULT_N_RESULTS,
+    trace: bool = False,
 ) -> QueryResult:
     """Run the full read path for `query`, returning routing, retrieval, and the answer.
 
     `router` must expose `.route(query, profile) -> RoutingResult` (real `QueryRouter` or
     `OfflineRouter`). `synthesizer`, if given, must expose `.synthesize(prompt) -> str`
     (real `Synthesizer` or a fake); when None, synthesis is skipped and `QueryResult.answer`
-    is None. `now` is injectable so recency scoring and tests are deterministic.
+    is None. `now` is injectable so recency scoring and tests are deterministic. `trace`
+    populates `QueryResult.prompt`/`.raw_synthesis` for the diagnostic instrument (in
+    retrieval-only mode it still builds the prompt so the offered sources can be inspected).
     """
     now = now or datetime.now(tz=timezone.utc)
 
     # --- Retrieval half ---
     routing = router.route(query, profile)
-    retrieved = VectorSearch(collection).search(routing, n_results=n_results)
+    search = VectorSearch(collection)
+    retrieved = search.search(routing, n_results=n_results)
     ranked = Ranker().rank(retrieved, routing, now)
     clusters = StoryClusterer().cluster(ranked)
     retrieval_output = assemble_retrieval_output(clusters)
 
     if synthesizer is None:
-        return QueryResult(routing=routing, retrieval=retrieval_output, answer=None)
+        # Build the prompt anyway under trace, so the instrument can show what *would* be
+        # sent (and the offered CHUNK_IDs) even without a Gemini key.
+        prompt = (
+            PromptBuilder().build(retrieval_output, query, lens or [], profile) if trace else None
+        )
+        return QueryResult(
+            routing=routing,
+            retrieval=retrieval_output,
+            answer=None,
+            filter_fallback=search.last_filter_fallback,
+            prompt=prompt,
+        )
 
     # --- Generation half ---
     # The candidate set for grounding is every ranked chunk, keyed by id — a claim may cite
@@ -153,4 +180,7 @@ def answer(
         retrieval=retrieval_output,
         answer=generated,
         validated_claims=validated,
+        filter_fallback=search.last_filter_fallback,
+        prompt=prompt if trace else None,
+        raw_synthesis=raw_text if trace else None,
     )

@@ -26,6 +26,7 @@ import dataclasses
 import importlib.util
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +65,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar="PATH",
         help="Also write the full results + summary to this JSON file.",
     )
+    p.add_argument(
+        "--trace",
+        default=None,
+        metavar="ID",
+        help="Diagnose a single labeled question (e.g. pt-02): dump routing, retrieval, the "
+        "raw Gemini output, parsed claims, and per-claim validation, then exit.",
+    )
     return p.parse_args(argv)
 
 
@@ -99,16 +107,16 @@ def _open_collection(chroma_path: Path, collection_name: str):
 def _print_table(results) -> None:
     print(
         f"\n{'id':<7} {'intent':<22} {'exp':<8} {'n':>3} {'top1':>6} {'top3':>6} "
-        f"{'cite':>5} {'valid':>6}  bucket"
+        f"{'cite':>5} {'fb':>3}  {'bucket':<14} verdict"
     )
-    print("-" * 92)
+    print("-" * 100)
     for r in results:
         cite = "-" if r.synthesis_citable is None else ("yes" if r.synthesis_citable else "no")
-        valid = "-" if r.validator_passed is None else ("yes" if r.validator_passed else "no")
+        fb = "yes" if r.filter_fallback else "-"
         print(
             f"{r.id:<7} {r.intent:<22} {r.expected:<8} {r.n_retrieved:>3} "
             f"{_fmt(r.top1_similarity):>6} {_fmt(r.top3_similarity):>6} "
-            f"{cite:>5} {valid:>6}  {r.bucket}"
+            f"{cite:>5} {fb:>3}  {r.bucket:<14} {r.verdict}"
         )
 
 
@@ -116,22 +124,149 @@ def _print_summary(summary) -> None:
     print("\n" + "=" * 70)
     print("SUMMARY")
     print("=" * 70)
+
+    if summary.citation_path_suspect:
+        print("  " + "!" * 66)
+        print(
+            f"  !! CITATION PATH SUSPECT: {summary.strong_uncited_in_scope} in-scope "
+            f"question(s) had strong retrieval (top1 >= floor)"
+        )
+        print("  !! but produced no citation. The headline rates below are NOT trustworthy")
+        print(
+            "  !! until the citation path is fixed. Diagnose with: python -m evals.run --trace <id>"
+        )
+        print("  " + "!" * 66)
+
     print(f"  total questions: {summary.total}   synthesis ran: {summary.synthesis_ran}")
-    print(f"  buckets: {summary.bucket_counts}")
+    print(f"  buckets:  {summary.bucket_counts}")
+    print(f"  verdicts: {summary.verdict_counts}")
     print(
-        f"  in-scope answered (working / in-scope): "
-        f"{summary.in_scope_working}/{summary.in_scope_total}  "
-        f"=> answerable-in-scope: {_pct(summary.answerable_in_scope_rate)}"
+        f"  answerable-in-scope (cited / in-scope): "
+        f"{summary.in_scope_cited}/{summary.in_scope_total}  "
+        f"=> {_pct(summary.answerable_in_scope_rate)}"
     )
     print(
-        f"  out-of-scope declined (working / out-of-scope): "
-        f"{summary.out_of_scope_declined}/{summary.out_of_scope_total}  "
-        f"=> abstention: {_pct(summary.abstention_rate)}"
+        f"  meaningful abstention (declined / out-of-scope WITH strong retrieval): "
+        f"{summary.out_of_scope_tempted_declined}/{summary.out_of_scope_tempted}  "
+        f"=> {_pct(summary.meaningful_abstention_rate)}"
+    )
+    print(
+        f"  filter-starvation: no-candidates={summary.no_candidates_count}  "
+        f"filter-fallback-fired={summary.filter_fallback_count}"
     )
     print(f"  avg top1 similarity (in-scope): {_fmt(summary.avg_top1_in_scope)}")
     if not summary.synthesis_ran:
-        print("\n  NOTE: retrieval-only run — buckets are 'retrieval-only' and the headline")
-        print("  rates need a re-run with GEMINI_API_KEY + google-genai to populate.")
+        print("\n  NOTE: retrieval-only run — citation-dependent buckets/rates are blank; only")
+        print("  no-candidates + retrieval signal are observable. Re-run with GEMINI_API_KEY.")
+
+
+_CHUNK_ID_RE = re.compile(r"^CHUNK_ID:\s*(\S+)", re.MULTILINE)
+
+
+def _offered_chunk_ids(prompt: str | None) -> list[str]:
+    """The CHUNK_IDs actually shown to Gemini — read from the assembled prompt verbatim."""
+    return _CHUNK_ID_RE.findall(prompt or "")
+
+
+def _validation_reason(vc) -> str:
+    """Infer why a claim did/didn't ground from its validation_confidence (see validator.py)."""
+    if vc.is_grounded and vc.validation_confidence >= 1.0:
+        return "direct-hit (ID matched an offered chunk)"
+    if vc.is_grounded:
+        return f"semantic match ({vc.validation_confidence:.2f} >= 0.85)"
+    if vc.validation_confidence > 0.0:
+        return f"semantic below threshold ({vc.validation_confidence:.2f} < 0.85)"
+    return "no match (ID absent AND no chunk >= 0.85 / no embeddings)"
+
+
+def _diagnosis(result, offered: list[str], parsed_claims) -> str:
+    """One-line pointer to the Phase B branch this question's failure implies."""
+    from generation.synthesizer import INSUFFICIENT_DATA_MARKER
+
+    raw = result.raw_synthesis or ""
+    grounded = [c for c in (result.validated_claims or []) if c.is_grounded]
+    if grounded:
+        return "citation path WORKING for this question (>=1 grounded claim)."
+    if raw.strip() == INSUFFICIENT_DATA_MARKER:
+        return (
+            "MARKER — the Gemini *call* failed (fail-closed). Check model id / SDK / key / quota."
+        )
+    if "CLAIM:" not in raw:
+        return (
+            "PROSE — Gemini didn't emit CLAIM/SOURCE_CHUNK_ID blocks. "
+            "Check the prompt/parse contract."
+        )
+    cited_ids = [c.source_chunk_id for c in parsed_claims if c.source_chunk_id]
+    if cited_ids and offered and not any(cid in offered for cid in cited_ids):
+        return (
+            "MANGLED IDs — cited IDs don't match any offered CHUNK_ID. "
+            "Switch the prompt to short handles."
+        )
+    return (
+        "IDs present but ungrounded — semantic fallback below 0.85; "
+        "revisit the threshold / embeddings."
+    )
+
+
+def _trace_one(question, *, collection, router, synthesizer, n_results) -> int:
+    from evals.harness import _similarity_at_ranks
+    from generation.claim_parser import ClaimParser
+    from query.engine import answer
+    from retrieval.contracts import UserProfile
+
+    result = answer(
+        question.question,
+        UserProfile(),
+        collection=collection,
+        router=router,
+        synthesizer=synthesizer,
+        n_results=n_results,
+        trace=True,
+    )
+    n, top1, top3 = _similarity_at_ranks(result)
+    offered = _offered_chunk_ids(result.prompt)
+
+    print(f"\n{'=' * 70}\nTRACE — {question.id}\n{'=' * 70}")
+    print(f"  question: {question.question!r}")
+    print(f"  intent: {question.intent}   expected: {question.expected}")
+
+    r = result.routing
+    print(
+        f"\n-- ROUTING --\n  intent: {r.intent}   tickers: {r.tickers or '-'}   "
+        f"sectors: {r.sectors or '-'}   window: {r.time_window_days}d"
+    )
+    print(f"  filter_fallback: {result.filter_fallback}")
+
+    print(f"\n-- RETRIEVAL --\n  n: {n}   top1: {_fmt(top1)}   top3: {_fmt(top3)}")
+    print(f"  offered CHUNK_IDs ({len(offered)}):")
+    for cid in offered:
+        print(f"    {cid}")
+
+    if result.raw_synthesis is None:
+        print(
+            "\n-- SYNTHESIS --\n  skipped (no Gemini). Re-run with GEMINI_API_KEY + "
+            "google-genai to see the raw output, parsed claims, and validation."
+        )
+        return 0
+
+    print(f"\n-- RAW GEMINI OUTPUT (verbatim) --\n{result.raw_synthesis}")
+
+    parsed = ClaimParser().parse(result.raw_synthesis)
+    print(f"\n-- PARSED CLAIMS ({len(parsed)}) --")
+    for i, c in enumerate(parsed, 1):
+        print(f"  [{i}] is_valid={c.is_valid}  source_chunk_id={c.source_chunk_id}")
+        print(f"      claim: {(c.claim_text or '')[:90]}")
+
+    validated = result.validated_claims or []
+    print(f"\n-- VALIDATION ({len(validated)}) --")
+    for i, vc in enumerate(validated, 1):
+        print(
+            f"  [{i}] grounded={vc.is_grounded}  support={vc.supporting_chunk_id}  "
+            f"reason: {_validation_reason(vc)}"
+        )
+
+    print(f"\n-- DIAGNOSIS --\n  {_diagnosis(result, offered, parsed)}\n")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -174,6 +309,19 @@ def main(argv: list[str] | None = None) -> int:
         print("  synthesis: Gemini Flash")
     else:
         print("  synthesis: skipped (no GEMINI_API_KEY / google-genai) — retrieval only")
+
+    if args.trace:
+        question = next((q for q in questions if q.id == args.trace), None)
+        if question is None:
+            print(f"  !! no question with id '{args.trace}' in the eval set")
+            return 1
+        return _trace_one(
+            question,
+            collection=collection,
+            router=router,
+            synthesizer=synthesizer,
+            n_results=args.n_results,
+        )
 
     results = evaluate(
         questions,

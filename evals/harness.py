@@ -11,23 +11,31 @@ question:
     through? (Distinct from citable: claims can ground yet the formatter still surface none;
     in practice they coincide, but both are logged so a divergence is visible.)
 
-Then each question sorts into a bucket the operator can act on:
-  - working                      behaved as its `expected` label wanted.
-  - in-scope-but-thin            expected `answer` but produced no citable answer => the
-                                 corpus is too thin here. ADD FEEDS; re-run to measure the
-                                 delta. No router change would help.
-  - out-of-scope-router-missed   expected `abstain`/`redirect` but produced a citable answer
-                                 anyway => ROUTER work. No new sources would help.
+Then each question sorts into a **behavior-first** bucket — keyed on `(n, top1, cited)`, NOT
+on the question's own label (an earlier version keyed on `expected`, which made the buckets a
+frozen re-print of the label distribution whenever citation was uniformly broken). The bucket
+names what the *system did*, so a broken citation path can't hide as thinness:
+  - no-candidates    n == 0. Nothing survived retrieval — a filter/retrieval bug (e.g. a
+                     ticker filter that matched nothing), NEVER "thin". Distinct on purpose.
+  - cited            produced an answer with >=1 citation.
+  - strong-uncited   top1 >= floor but no citation — a STRONG match the citation path failed
+                     to ground. A generation bug, not a coverage problem. The smoking gun.
+  - thin             n > 0, top1 < floor, no citation — genuinely weak signal. ADD FEEDS.
+  - retrieval-only   synthesis was skipped (no Gemini); citation is unobservable.
 
-The two headline rates fall straight out: answerable-in-scope (of in-scope questions, how
-many got a cited answer) and out-of-scope-abstention (of out-of-scope questions, how many
-were correctly declined). Those are the résumé line — "moved answerable-in-scope from X% to
-Y% after adding N feeds while abstention stayed at 100%". Log results to Metrics.md
-(see CLAUDE.md "Metrics").
+A separate `verdict` cross-references the bucket against `expected` (correct-answer /
+correct-decline / missed-answer / over-answered), and the two headline rates fall out:
+answerable-in-scope (of in-scope questions, how many were `cited`) and out-of-scope
+abstention. Abstention is counted as **meaningful only where retrieval surfaced strong
+content** (top1 >= floor) — a decline on `n == 0` is vacuous. If any `strong-uncited` rows
+exist, `summarize` flags `citation_path_suspect`: the rates are not trustworthy until the
+citation path is fixed. Those rates and their before/after deltas are the résumé line — log
+them to Metrics.md (see CLAUDE.md "Metrics").
 
 Synthesis needs a Gemini client; in retrieval-only mode (`synthesizer=None`) the synthesis
-fields are None and questions land in the `retrieval-only` bucket with `has_signal` reported
-instead — enough to eyeball the corpus, not enough for the full buckets.
+fields are None and questions land in the `retrieval-only` bucket (or `no-candidates` when
+`n == 0`, which is observable without Gemini) — enough to catch filter starvation and eyeball
+the corpus, not enough for the citation-dependent buckets or the headline rates.
 
   load_questions(path)                 -> list[Question]
   evaluate(questions, *, collection, router, synthesizer=None, ...) -> list[QuestionResult]
@@ -53,10 +61,19 @@ _DEFAULT_QUESTIONS_PATH = Path(__file__).parent / "questions.yaml"
 # used when synthesis is skipped; with synthesis, the citable-answer outcome decides buckets.
 DEFAULT_SIMILARITY_FLOOR = 0.30
 
-BUCKET_WORKING = "working"
-BUCKET_THIN = "in-scope-but-thin"
-BUCKET_ROUTER_MISS = "out-of-scope-router-missed"
+# Behavior-first buckets — keyed on (n, top1, cited), never on the question's label.
+BUCKET_NO_CANDIDATES = "no-candidates"
+BUCKET_CITED = "cited"
+BUCKET_STRONG_UNCITED = "strong-uncited"
+BUCKET_THIN = "thin"
 BUCKET_RETRIEVAL_ONLY = "retrieval-only"
+
+# Verdicts — the bucket cross-referenced against the question's `expected` label.
+VERDICT_CORRECT_ANSWER = "correct-answer"
+VERDICT_CORRECT_DECLINE = "correct-decline"
+VERDICT_MISSED_ANSWER = "missed-answer"
+VERDICT_OVER_ANSWERED = "over-answered"
+VERDICT_UNKNOWN = "unknown-no-synthesis"
 
 _OUT_OF_SCOPE_BEHAVIORS = frozenset({"abstain", "redirect"})
 
@@ -88,8 +105,11 @@ class QuestionResult:
     claims_grounded: Optional[int]
     validator_passed: Optional[bool]
     confidence_warning: Optional[str]
+    # whether Phase 2 search dropped its where-clause (empty filtered set) to get this `n`
+    filter_fallback: bool
     # --- verdict ---
     bucket: str
+    verdict: str
 
 
 @dataclass
@@ -97,12 +117,25 @@ class EvalSummary:
     total: int
     synthesis_ran: bool
     bucket_counts: dict[str, int]
+    verdict_counts: dict[str, int]
     in_scope_total: int
-    in_scope_working: int
+    in_scope_cited: int
     answerable_in_scope_rate: Optional[float]
     out_of_scope_total: int
-    out_of_scope_declined: int
-    abstention_rate: Optional[float]
+    # out-of-scope questions where retrieval surfaced strong content (the temptation to
+    # answer existed) — the only ones whose abstention is a meaningful measurement
+    out_of_scope_tempted: int
+    out_of_scope_tempted_declined: int
+    meaningful_abstention_rate: Optional[float]
+    # the smoking gun: strong retrieval, no citation. Counted overall and, more tellingly,
+    # among IN-SCOPE questions (where a citation was expected — an out-of-scope strong-uncited
+    # is a correct refusal, not a bug). A non-trivial `strong_uncited_in_scope` => the
+    # citation path is likely broken and the headline rates above are not trustworthy.
+    strong_uncited_count: int
+    strong_uncited_in_scope: int
+    no_candidates_count: int
+    filter_fallback_count: int
+    citation_path_suspect: bool
     # average of the per-question MAX signals across in-scope questions (an aggregate of
     # maxes, not the within-query mean the gate fix warns against)
     avg_top1_in_scope: Optional[float]
@@ -141,21 +174,32 @@ def _similarity_at_ranks(result: Any) -> tuple[int, Optional[float], Optional[fl
 
 
 def _bucket(
-    expected: str, synthesis_ran: bool, synthesis_citable: Optional[bool], has_signal: bool
+    n_retrieved: int, has_signal: bool, synthesis_ran: bool, synthesis_citable: Optional[bool]
 ) -> str:
-    """Sort one question into an actionable bucket (see module docstring)."""
-    out_of_scope = expected in _OUT_OF_SCOPE_BEHAVIORS
+    """Sort one question into a behavior-first bucket — from what the system DID, not its label.
 
+    `no-candidates` is checked first and independent of synthesis: zero survivors is a
+    retrieval/filter bug regardless of what generation would have done with them.
+    """
+    if n_retrieved == 0:
+        return BUCKET_NO_CANDIDATES
     if not synthesis_ran:
-        # Can't observe abstain-vs-answer without generation; report the retrieval proxy.
         return BUCKET_RETRIEVAL_ONLY
+    if synthesis_citable:
+        return BUCKET_CITED
+    # Not cited, with candidates: strong retrieval that didn't ground is a citation bug;
+    # weak retrieval is genuine thinness.
+    return BUCKET_STRONG_UNCITED if has_signal else BUCKET_THIN
 
-    if out_of_scope:
-        # Correct behavior is to decline; a citable answer is a miss the router should catch.
-        return BUCKET_ROUTER_MISS if synthesis_citable else BUCKET_WORKING
 
-    # In-scope: a citable answer is success; its absence means the corpus was too thin.
-    return BUCKET_WORKING if synthesis_citable else BUCKET_THIN
+def _verdict(expected: str, bucket: str) -> str:
+    """Cross-reference the behavior bucket against what the label wanted."""
+    if bucket == BUCKET_RETRIEVAL_ONLY:
+        return VERDICT_UNKNOWN
+    answered = bucket == BUCKET_CITED
+    if expected in _OUT_OF_SCOPE_BEHAVIORS:
+        return VERDICT_OVER_ANSWERED if answered else VERDICT_CORRECT_DECLINE
+    return VERDICT_CORRECT_ANSWER if answered else VERDICT_MISSED_ANSWER
 
 
 def evaluate(
@@ -199,6 +243,7 @@ def evaluate(
             validator_passed = synthesis_citable = None
             confidence_warning = None
 
+        bucket = _bucket(n_retrieved, has_signal, synthesis_ran, synthesis_citable)
         results.append(
             QuestionResult(
                 id=q.id,
@@ -215,7 +260,9 @@ def evaluate(
                 claims_grounded=claims_grounded,
                 validator_passed=validator_passed,
                 confidence_warning=confidence_warning,
-                bucket=_bucket(q.expected, synthesis_ran, synthesis_citable, has_signal),
+                filter_fallback=qr.filter_fallback,
+                bucket=bucket,
+                verdict=_verdict(q.expected, bucket),
             )
         )
 
@@ -223,21 +270,32 @@ def evaluate(
 
 
 def summarize(results: list[QuestionResult]) -> EvalSummary:
-    """Aggregate per-question results into the two headline rates + bucket counts."""
+    """Aggregate per-question results into the headline rates, bucket/verdict counts, and
+    the citation-path-suspect guard."""
     bucket_counts: dict[str, int] = {}
+    verdict_counts: dict[str, int] = {}
     for r in results:
         bucket_counts[r.bucket] = bucket_counts.get(r.bucket, 0) + 1
+        verdict_counts[r.verdict] = verdict_counts.get(r.verdict, 0) + 1
 
     synthesis_ran = any(r.synthesis_ran for r in results)
 
     in_scope = [r for r in results if r.expected == "answer"]
     out_of_scope = [r for r in results if r.expected in _OUT_OF_SCOPE_BEHAVIORS]
 
-    in_scope_working = sum(1 for r in in_scope if r.bucket == BUCKET_WORKING)
-    out_declined = sum(1 for r in out_of_scope if r.bucket == BUCKET_WORKING)
+    in_scope_cited = sum(1 for r in in_scope if r.bucket == BUCKET_CITED)
+    answerable_rate = (in_scope_cited / len(in_scope)) if in_scope and synthesis_ran else None
 
-    answerable_rate = (in_scope_working / len(in_scope)) if in_scope and synthesis_ran else None
-    abstention_rate = (out_declined / len(out_of_scope)) if out_of_scope and synthesis_ran else None
+    # Abstention is only meaningful where retrieval surfaced strong content — the temptation
+    # to answer existed and was resisted. A decline on n=0 or thin retrieval is vacuous.
+    tempted = [r for r in out_of_scope if r.has_signal]
+    tempted_declined = sum(1 for r in tempted if r.bucket != BUCKET_CITED)
+    abstention_rate = (tempted_declined / len(tempted)) if tempted and synthesis_ran else None
+
+    strong_uncited = sum(1 for r in results if r.bucket == BUCKET_STRONG_UNCITED)
+    strong_uncited_in_scope = sum(1 for r in in_scope if r.bucket == BUCKET_STRONG_UNCITED)
+    no_candidates = sum(1 for r in results if r.bucket == BUCKET_NO_CANDIDATES)
+    filter_fallback_count = sum(1 for r in results if r.filter_fallback)
 
     in_scope_top1s = [r.top1_similarity for r in in_scope if r.top1_similarity is not None]
     avg_top1 = (sum(in_scope_top1s) / len(in_scope_top1s)) if in_scope_top1s else None
@@ -246,11 +304,18 @@ def summarize(results: list[QuestionResult]) -> EvalSummary:
         total=len(results),
         synthesis_ran=synthesis_ran,
         bucket_counts=bucket_counts,
+        verdict_counts=verdict_counts,
         in_scope_total=len(in_scope),
-        in_scope_working=in_scope_working,
+        in_scope_cited=in_scope_cited,
         answerable_in_scope_rate=answerable_rate,
         out_of_scope_total=len(out_of_scope),
-        out_of_scope_declined=out_declined,
-        abstention_rate=abstention_rate,
+        out_of_scope_tempted=len(tempted),
+        out_of_scope_tempted_declined=tempted_declined,
+        meaningful_abstention_rate=abstention_rate,
+        strong_uncited_count=strong_uncited,
+        strong_uncited_in_scope=strong_uncited_in_scope,
+        no_candidates_count=no_candidates,
+        filter_fallback_count=filter_fallback_count,
+        citation_path_suspect=(strong_uncited_in_scope > 0),
         avg_top1_in_scope=avg_top1,
     )
