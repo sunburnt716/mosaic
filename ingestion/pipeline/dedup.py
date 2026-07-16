@@ -13,6 +13,10 @@ Priority is strict: L1 (content hash) > L2 (identity key) > L3 (embedding) > NEW
 
 This module is read-only w.r.t. the SeenStore and never calls an embedding model;
 L3 compares pre-computed embeddings supplied by the caller.
+
+`cosine_similarity` and `L3_SIMILARITY_THRESHOLD` are public (not `_`-prefixed) so the
+Retrieval Pipeline's Phase 4 clustering can reuse them directly for cross-outlet corroboration
+instead of duplicating the math or drifting onto a different threshold (see retrieval/cluster.py).
 """
 
 import math
@@ -29,7 +33,7 @@ class DedupResult(Enum):
     L3_NEAR_DUPLICATE = "l3_near_duplicate"
 
 
-def _cosine_similarity(a, b) -> float:
+def cosine_similarity(a, b) -> float:
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(y * y for y in b))
@@ -51,7 +55,7 @@ def classify(doc, seen_store, embedding=None) -> DedupResult:
     # L3 — no identity match, but semantically near an existing doc: cross-outlet story.
     if embedding is not None:
         for _doc_id, stored_embedding in seen_store.get_embeddings():
-            if _cosine_similarity(embedding, stored_embedding) >= L3_SIMILARITY_THRESHOLD:
+            if cosine_similarity(embedding, stored_embedding) >= L3_SIMILARITY_THRESHOLD:
                 return DedupResult.L3_NEAR_DUPLICATE
 
     return DedupResult.NEW

@@ -4,3 +4,23 @@ requests>=2.31
 # Phase 1 chunking sizes chunks with the MiniLM tokenizer (embedding-aligned). transformers
 # provides AutoTokenizer; the unit suite injects a fake tokenizer and does not need it.
 transformers>=4.0
+# Retrieval Phase 1 embeds the query with the same MiniLM model chunks are embedded with
+# (extraction/utils/embedding.py); Extraction Phase 2 embeds chunks in batch
+# (extraction/embedder.py). Both lazily imported; the unit suite injects a fake model.
+sentence-transformers>=3.0
+# Retrieval Phase 1's QueryRouter calls Llama 3.1 8B on Groq. Lazily imported; the unit suite
+# injects a fake client.
+groq>=0.9
+# Extraction Phase 3 writes chunk vectors + citation metadata to Chroma
+# (extraction/chroma_store.py); Retrieval Phase 2 queries the same collection. Lazily
+# imported; the unit suite injects fakes, so only live/integration runs need it installed.
+chromadb>=1.0
+# Generation Phase 2's Synthesizer calls Gemini Flash via Google's current unified SDK
+# (`from google import genai`). Lazily imported; the unit suite (including the golden-path
+# integration test) injects a fake client, so this is never imported offline.
+google-genai>=1.0
+# query/run.py and evals/run.py load GROQ_API_KEY/GEMINI_API_KEY from a .env file at the
+# project root (see .env.example). Imported eagerly (it's not a heavy dep like the ones
+# above) but only by those two CLI entrypoints — not by any package the offline test suite
+# imports, so it doesn't need to be installed to run pytest.
+python-dotenv>=1.0

@@ -1,0 +1,160 @@
+# Labeled answerability eval set — the measured basis for "should I broaden sources?"
+#
+# Each question is tagged with two labels the harness scores against:
+#
+#   intent — what kind of question it is:
+#     news-synthesis           blend recent coverage of a topic into a cited summary
+#     point-in-time-statistic  a specific figure/fact as of a moment (earnings, a filing item)
+#     ticker-specific          news about one company/symbol
+#     out-of-scope             the system should NOT answer from the corpus
+#
+#   expected — what the pipeline *should* do:
+#     answer    produce a cited answer (in-scope; failure here => "in-scope-but-thin")
+#     abstain   decline: off-domain, no corpus grounding possible
+#     redirect  decline with a mission nudge: advice/forecasting the product never gives
+#
+# The split is deliberate: most in-scope questions are tagged `answer` so a thin corpus
+# surfaces them as "in-scope-but-thin" (=> add feeds, measure the delta). Out-of-scope
+# questions are tagged `abstain`/`redirect` so an over-eager answer surfaces as
+# "out-of-scope-router-missed" (=> router work, no new sources). See evals/harness.py.
+#
+# Grounded in the live sources (SEC EDGAR 8-K discovery feed + FT markets). Extend freely —
+# this is data, not code; re-running after adding questions or feeds is how deltas are measured.
+
+questions:
+  # ---- news-synthesis (answer) ----
+  - id: ns-01
+    question: "What's the latest news on European inflation?"
+    intent: news-synthesis
+    expected: answer
+  - id: ns-02
+    question: "What are markets watching ahead of the Federal Reserve's next decision?"
+    intent: news-synthesis
+    expected: answer
+  - id: ns-03
+    question: "What's happening in the semiconductor and memory-chip market?"
+    intent: news-synthesis
+    expected: answer
+  - id: ns-04
+    question: "How are European energy prices affecting the markets outlook?"
+    intent: news-synthesis
+    expected: answer
+  - id: ns-05
+    question: "What's the recent activity in the IPO and public-listing market?"
+    intent: news-synthesis
+    expected: answer
+  - id: ns-06
+    question: "What regulatory scrutiny are large cloud-computing providers facing?"
+    intent: news-synthesis
+    expected: answer
+  - id: ns-07
+    question: "What are analysts saying about banks and brokerages right now?"
+    intent: news-synthesis
+    expected: answer
+  - id: ns-08
+    question: "What's the latest on cryptocurrency regulation?"
+    intent: news-synthesis
+    expected: answer
+    note: "Likely thin — no dedicated crypto source yet. A good add-feeds signal."
+
+  # ---- point-in-time-statistic (answer) ----
+  - id: pt-01
+    question: "What did the most recent 8-K filings report about results of operations?"
+    intent: point-in-time-statistic
+    expected: answer
+  - id: pt-02
+    question: "Which companies recently filed a material definitive agreement (Item 1.01)?"
+    intent: point-in-time-statistic
+    expected: answer
+  - id: pt-03
+    question: "What were the most recent SEC filings about financial condition?"
+    intent: point-in-time-statistic
+    expected: answer
+  - id: pt-04
+    question: "What items were disclosed in the latest batch of 8-K filings?"
+    intent: point-in-time-statistic
+    expected: answer
+  - id: pt-05
+    question: "What was the most recent regulatory filing from a Tier 0 source?"
+    intent: point-in-time-statistic
+    expected: answer
+  - id: pt-06
+    question: "What specific revenue figure did Nvidia report last quarter?"
+    intent: point-in-time-statistic
+    expected: answer
+    note: "Likely thin — discovery feed carries filing metadata, not earnings tables."
+
+  # ---- ticker-specific (answer) ----
+  - id: tk-01
+    question: "What's the latest news on Amazon (AMZN)?"
+    intent: ticker-specific
+    expected: answer
+  - id: tk-02
+    question: "Any recent news about Microsoft?"
+    intent: ticker-specific
+    expected: answer
+  - id: tk-03
+    question: "What's happening with Nvidia lately?"
+    intent: ticker-specific
+    expected: answer
+  - id: tk-04
+    question: "Is there recent news on Alphabet or Google?"
+    intent: ticker-specific
+    expected: answer
+  - id: tk-05
+    question: "What's the latest on Apple?"
+    intent: ticker-specific
+    expected: answer
+  - id: tk-06
+    question: "Any recent filings or news for Oracle?"
+    intent: ticker-specific
+    expected: answer
+  - id: tk-07
+    question: "What's the latest on Boeing?"
+    intent: ticker-specific
+    expected: answer
+    note: "Coverage-dependent — may surface as in-scope-but-thin."
+
+  # ---- out-of-scope: redirect (advice / forecasting the product never gives) ----
+  - id: os-r1
+    question: "Should I buy Nvidia stock right now?"
+    intent: out-of-scope
+    expected: redirect
+  - id: os-r2
+    question: "Is now a good time to sell my Tesla shares?"
+    intent: out-of-scope
+    expected: redirect
+  - id: os-r3
+    question: "Will the S&P 500 go up or down next month?"
+    intent: out-of-scope
+    expected: redirect
+  - id: os-r4
+    question: "What's a good price target for Amazon?"
+    intent: out-of-scope
+    expected: redirect
+  - id: os-r5
+    question: "Which stock should I put my retirement savings into?"
+    intent: out-of-scope
+    expected: redirect
+
+  # ---- out-of-scope: abstain (off-domain, no corpus grounding) ----
+  - id: os-a1
+    question: "What's the weather forecast for Paris this weekend?"
+    intent: out-of-scope
+    expected: abstain
+  - id: os-a2
+    question: "Can you give me a recipe for spaghetti carbonara?"
+    intent: out-of-scope
+    expected: abstain
+  - id: os-a3
+    question: "Who won the FIFA World Cup in 2022?"
+    intent: out-of-scope
+    expected: abstain
+  - id: os-a4
+    question: "What's the capital city of Australia?"
+    intent: out-of-scope
+    expected: abstain
+  - id: os-a5
+    question: "How do I fix a leaking kitchen tap?"
+    intent: out-of-scope
+    expected: abstain

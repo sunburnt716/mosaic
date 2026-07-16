@@ -56,6 +56,12 @@ _VALID_ADAPTERS: frozenset[str] = frozenset({"rss", "rest_json"})
 # downstream: filings are chunked by section, articles by paragraph.
 _VALID_DOC_TYPES: frozenset[str] = frozenset({"article", "filing"})
 
+# Valid values for processing_mode, which decides whether a source's documents are
+# extracted (chunked + embedded) inline during ingestion ("hot") or deferred to
+# on-demand query-time processing ("cold"). See CLAUDE.md "Extraction layer" for the
+# hot/cold split rationale — this is a per-source config knob, never inferred from tier.
+_VALID_PROCESSING_MODES: frozenset[str] = frozenset({"hot", "cold"})
+
 # Tier boundaries. Tier is stamped at ingest and must never be inferred later.
 _TIER_MIN = 0
 _TIER_MAX = 3
@@ -121,12 +127,20 @@ class SourceConfig:
                      loader accepts it here so tests and dev configs can supply it.
       doc_type     — controls chunking: "article" → by paragraph,
                      "filing" → by section.
+      processing_mode — "hot" (extract inline right after ingestion) or "cold"
+                     (defer to on-demand query-time processing). Defaults to "cold".
+                     Config-driven, never inferred from tier.
       params       — catch-all for adapter-specific knobs not covered above
                      (e.g. pagination config, result filters).
       headers      — HTTP headers added to every request for this source.
       transform    — name of a registered per-source transform (pipeline/transforms.py)
                      applied to each raw entry before field-mapping. None means no
                      transform runs for this source.
+      body_fetch   — name of a registered body-enrichment strategy
+                     (pipeline/body_enrichment.py) that fetches the source's real page
+                     text at ingest and replaces the feed snippet before normalize. None
+                     (default) means the feed's own body is used as-is. Used for sources
+                     whose feed carries only a headline/index snippet (e.g. SEC EDGAR).
       expects, max_fallback_title_rate, max_empty_body_rate, min_records —
                      optional quality-gate tuning; see module docstring.
     """
@@ -137,12 +151,14 @@ class SourceConfig:
     url: str
     poll_interval: timedelta
     doc_type: Literal["article", "filing"]
+    processing_mode: Literal["hot", "cold"]
     field_mappings: dict[str, str]
     auth: dict[str, Any]
     enabled: bool
     params: dict[str, Any]
     headers: dict[str, str]
     transform: Optional[str] = None
+    body_fetch: Optional[str] = None
     expects: dict[str, bool] = field(default_factory=dict)
     max_fallback_title_rate: Optional[float] = None
     max_empty_body_rate: Optional[float] = None
@@ -216,6 +232,15 @@ def _validate_entry(entry: dict[str, Any], index: int) -> SourceConfig:
         )
     doc_type: Literal["article", "filing"] = raw_doc_type  # type: ignore[assignment]
 
+    # --- processing_mode (optional, defaults to "cold") ---
+    raw_processing_mode = entry.get("processing_mode", "cold")
+    if raw_processing_mode not in _VALID_PROCESSING_MODES:
+        raise ValueError(
+            f"{label}: 'processing_mode' must be one of "
+            f"{sorted(_VALID_PROCESSING_MODES)}, got {raw_processing_mode!r}."
+        )
+    processing_mode: Literal["hot", "cold"] = raw_processing_mode  # type: ignore[assignment]
+
     # --- field_mappings (optional, defaults to {}) ---
     field_mappings = entry.get("field_mappings", {})
     if not isinstance(field_mappings, dict):
@@ -250,6 +275,11 @@ def _validate_entry(entry: dict[str, Any], index: int) -> SourceConfig:
     if transform is not None and not isinstance(transform, str):
         raise ValueError(f"{label}: 'transform' must be a string, got {transform!r}.")
 
+    # --- body_fetch (optional, defaults to None) ---
+    body_fetch = entry.get("body_fetch")
+    if body_fetch is not None and not isinstance(body_fetch, str):
+        raise ValueError(f"{label}: 'body_fetch' must be a string, got {body_fetch!r}.")
+
     # --- expects (optional, defaults to {}) ---
     expects = entry.get("expects", {})
     if not isinstance(expects, dict):
@@ -283,12 +313,14 @@ def _validate_entry(entry: dict[str, Any], index: int) -> SourceConfig:
         url=str(url).strip(),
         poll_interval=poll_interval,
         doc_type=doc_type,
+        processing_mode=processing_mode,
         field_mappings=dict(field_mappings),
         auth=dict(auth),
         enabled=enabled,
         params=dict(params),
         headers=dict(headers),
         transform=transform,
+        body_fetch=body_fetch,
         expects=dict(expects),
         max_fallback_title_rate=(
             float(max_fallback_title_rate) if max_fallback_title_rate is not None else None

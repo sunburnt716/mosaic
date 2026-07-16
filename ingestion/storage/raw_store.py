@@ -9,6 +9,10 @@ Two tables:
                                        the same doc_id is a no-op overwrite)
   get_document(doc_id) -> Document|None
   get_raw(doc_id) -> dict|None
+  iter_unprocessed() -> Iterator[Document]  yields every doc with status="unprocessed";
+                                            the extraction layer's read side of the
+                                            ingestion->extraction handoff (cold-path
+                                            backfill, and any hot-path catch-up sweep)
 
 doc_id is derived from (identity_key, content_hash), so an L2 update produces a new
 doc_id and inserts a new row alongside the old version — both versions are retained.
@@ -22,6 +26,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 from ingestion.core.document import Document
 
@@ -91,6 +96,20 @@ class RawStore:
             "SELECT payload FROM raw_payloads WHERE doc_id = ?", (doc_id,)
         ).fetchone()
         return json.loads(row[0]) if row else None
+
+    def iter_unprocessed(self) -> Iterator[Document]:
+        """Yield every stored Document whose status is still "unprocessed".
+
+        Full-table scan + in-Python filter: the `data` column is an opaque JSON blob,
+        so there's no indexed `status` column to query against directly. Fine at
+        current scale; a dedicated column/index is a future optimization if the raw
+        store ever grows large enough for this to matter.
+        """
+        rows = self._conn.execute("SELECT data FROM documents").fetchall()
+        for (data,) in rows:
+            doc = _dict_to_doc(json.loads(data))
+            if doc.status == "unprocessed":
+                yield doc
 
     def close(self) -> None:
         self._conn.close()

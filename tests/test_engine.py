@@ -15,17 +15,22 @@ the stores' state after the call (and, where useful, through caplog).
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from ingestion.adapters.base import NotModifiedSignal, TransportError
 from ingestion.adapters.rss import RssAdapter
 from ingestion.engine import ConcreteEngine
+from ingestion.pipeline.body_enrichment import enrich_body
+from ingestion.pipeline.hashing import content_hash
 from ingestion.pipeline.normalizer import normalize
 from ingestion.storage.poll_state import PollStateStore
 from ingestion.storage.raw_store import RawStore
 from ingestion.storage.seen_store import SeenStore
 from tests.conftest import load_fixture, make_source_config
+
+_FIXTURES = Path(__file__).parent / "fixtures"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -303,3 +308,172 @@ class TestEnginePerRecordDrop:
         good_doc = normalize(good, rss_config, datetime.now(timezone.utc))
         assert raw.get_document(good_doc.id) is not None
         assert seen.get_hash(f"{rss_config.name}::bad-2") is None
+
+
+# ---------------------------------------------------------------------------
+# Hot-path extraction: processing_mode="hot" invokes the on_processed callback
+# ---------------------------------------------------------------------------
+
+
+class TestEngineHotPath:
+    def test_hot_mode_source_invokes_on_processed(self, monkeypatch, stores):
+        seen, raw, poll = stores
+        calls = []
+        engine = ConcreteEngine(raw, seen, poll, on_processed=calls.append)
+        config = make_source_config(name="test-reuters", adapter="rss", processing_mode="hot")
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+
+        engine.process_source(config)
+
+        assert len(calls) == 1
+        assert calls[0].id == normalize(item, config, datetime.now(timezone.utc)).id
+
+    def test_cold_mode_source_never_invokes_on_processed(self, monkeypatch, stores):
+        seen, raw, poll = stores
+        calls = []
+        engine = ConcreteEngine(raw, seen, poll, on_processed=calls.append)
+        config = make_source_config(name="test-reuters", adapter="rss", processing_mode="cold")
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+
+        engine.process_source(config)
+
+        assert calls == []
+
+    def test_no_on_processed_configured_hot_mode_is_noop(self, monkeypatch, stores):
+        # engine fixture has no on_processed wired; hot mode must not raise.
+        seen, raw, poll = stores
+        engine = ConcreteEngine(raw, seen, poll)
+        config = make_source_config(name="test-reuters", adapter="rss", processing_mode="hot")
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+
+        engine.process_source(config)  # must not raise
+
+        doc = normalize(item, config, datetime.now(timezone.utc))
+        assert raw.get_document(doc.id) is not None
+
+    def test_on_processed_failure_is_caught_and_counted(self, monkeypatch, stores, caplog):
+        seen, raw, poll = stores
+
+        def _boom(doc):
+            raise RuntimeError("simulated extraction failure")
+
+        engine = ConcreteEngine(raw, seen, poll, on_processed=_boom)
+        config = make_source_config(name="test-reuters", adapter="rss", processing_mode="hot")
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+
+        with caplog.at_level(logging.ERROR):
+            engine.process_source(config)  # must not raise despite on_processed failing
+
+        # The document is still stored — a hot-path failure doesn't undo ingestion.
+        doc = normalize(item, config, datetime.now(timezone.utc))
+        assert raw.get_document(doc.id) is not None
+        assert "Hot-path extraction failed" in caplog.text
+
+    def test_on_processed_not_called_for_l1_duplicate(self, monkeypatch, stores):
+        seen, raw, poll = stores
+        calls = []
+        engine = ConcreteEngine(raw, seen, poll, on_processed=calls.append)
+        config = make_source_config(name="test-reuters", adapter="rss", processing_mode="hot")
+        item = load_fixture("rss_reuters_sample.json")
+        _patch_rss(monkeypatch, [item])
+
+        engine.process_source(config)  # first pass: NEW, extracted
+        calls.clear()
+        engine.process_source(config)  # second pass: exact L1 duplicate
+
+        assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Body enrichment: SourceConfig.body_fetch fetches the real page BEFORE normalize,
+# so content_hash / document_id reflect the enriched body.
+# ---------------------------------------------------------------------------
+
+_EDGAR_INDEX_URL = (
+    "https://www.sec.gov/Archives/edgar/data/1083446/000110465926082892/"
+    "0001104659-26-082892-index.htm"
+)
+_EDGAR_PRIMARY_URL = (
+    "https://www.sec.gov/Archives/edgar/data/1083446/000110465926082892/"
+    "tm2620111d1_8k.htm"
+)
+
+
+def _edgar_item():
+    return {
+        "url": _EDGAR_INDEX_URL,
+        "title": "8-K - Astrana Health, Inc. (0001083446) (Filer)",
+        "raw_body": "8-K — Astrana Health, Inc.",  # the thin getcurrent snippet
+        "published": "2026-07-11T00:00:00Z",
+        "source_article_id": _EDGAR_INDEX_URL,
+        "raw_payload": {"link": _EDGAR_INDEX_URL},
+    }
+
+
+def _edgar_config():
+    return make_source_config(
+        name="sec-edgar",
+        adapter="rss",
+        tier=0,
+        url=_EDGAR_INDEX_URL,
+        doc_type="filing",
+        transform="edgar_filing_url",
+        body_fetch="edgar_filing",
+        headers={"User-Agent": "MosaicRAG test@example.com"},
+        expects={"title": True, "url": True, "body": False},
+    )
+
+
+class TestEngineBodyEnrichment:
+    def _fake_fetcher(self):
+        pages = {
+            _EDGAR_INDEX_URL: (_FIXTURES / "edgar-index.html").read_text(),
+            _EDGAR_PRIMARY_URL: (_FIXTURES / "edgar-8k.html").read_text(),
+        }
+        return lambda url, headers: pages[url]
+
+    def test_enriched_body_is_stored_and_hashed(self, monkeypatch, stores):
+        seen, raw, poll = stores
+        engine = ConcreteEngine(raw, seen, poll, body_fetcher=self._fake_fetcher())
+        config = _edgar_config()
+        item = _edgar_item()
+        _patch_rss(monkeypatch, [item])
+
+        engine.process_source(config)
+
+        # Reproduce the enrich->normalize path to find the stored id (both are pure and
+        # independent of fetched_at, so the id is deterministic).
+        enriched = enrich_body(_edgar_item(), config, fetch_url=self._fake_fetcher())
+        expected = normalize(enriched, config, datetime.now(timezone.utc))
+
+        stored = raw.get_document(expected.id)
+        assert stored is not None
+        # The real Item 1.01 text landed in the body, not the one-line snippet.
+        assert "Item 1.01" in stored.body
+        assert "$745 million" in stored.body
+        # content_hash reflects the enriched body — proving enrichment ran before hashing.
+        assert stored.content_hash == content_hash(stored.body)
+        assert stored.content_hash != content_hash("8-K — Astrana Health, Inc.")
+
+    def test_fetch_failure_falls_back_to_snippet_and_still_stores(self, monkeypatch, stores):
+        seen, raw, poll = stores
+
+        def boom(url, headers):
+            raise ConnectionError("SEC unreachable")
+
+        engine = ConcreteEngine(raw, seen, poll, body_fetcher=boom)
+        config = _edgar_config()
+        item = _edgar_item()
+        _patch_rss(monkeypatch, [item])
+
+        engine.process_source(config)  # must not raise or drop the record
+
+        # Body falls back to the cleaned snippet; the document is still ingested.
+        expected = normalize(_edgar_item(), config, datetime.now(timezone.utc))
+        stored = raw.get_document(expected.id)
+        assert stored is not None
+        assert stored.body == "8-K — Astrana Health, Inc."

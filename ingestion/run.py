@@ -9,6 +9,12 @@ Explicitly NOT responsible for: fetching, parsing, normalising, dedup, embedding
 or storage. All per-source work lives behind engine.process_source(). run.py only
 decides *when* and *who*, never *how*.
 
+Hot-path wiring exception: main() (the composition root) is the one place in this
+module that reaches past ingestion, building the closure ConcreteEngine calls after
+storing a document for a `processing_mode: hot` source (see ingestion/engine.py's
+ConcreteEngine docstring and CLAUDE.md's "Hot path wiring" for why this lives in main()
+and not inside ConcreteEngine or elsewhere in ingestion/).
+
 Scheduler design (tick-based):
   - The scheduler wakes every tick_interval seconds (e.g. 30 s).
   - On each wake it checks every enabled source against its poll_interval and
@@ -23,13 +29,16 @@ Scheduler design (tick-based):
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import signal
 import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
+from ingestion.core.document import Document
 from ingestion.core.source_config import SourceConfig, load_sources
 from ingestion.engine import ConcreteEngine, Engine
 from ingestion.storage.poll_state import PollStateStore
@@ -229,12 +238,52 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Run a single tick then exit. Use this for cron / cloud-scheduler mode.",
     )
     parser.add_argument(
+        "--chroma-path",
+        type=Path,
+        default=Path("data/chroma"),
+        metavar="PATH",
+        help=(
+            "Directory for the persistent Chroma vector store, used for hot-path "
+            "extraction. Only touched if at least one enabled source has "
+            "processing_mode: hot."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Log verbosity.",
     )
     return parser.parse_args(argv)
+
+
+def _build_hot_path_callback(raw_store: RawStore, chroma_path: Path) -> Callable[[Document], None]:
+    """Build the on_processed closure that extracts a document and marks it processed.
+
+    Imports extraction.* lazily, here rather than at module top, so ingestion/run.py
+    stays importable without chromadb/sentence-transformers installed when no source
+    actually uses processing_mode: hot (matching this codebase's existing lazy-import
+    convention for optional runtime deps).
+    """
+    import chromadb
+
+    from extraction.chroma_store import ChromaVectorStore
+    from extraction.embedder import MiniLMEmbedder
+    from extraction.extraction_engine import extract
+
+    embedder = MiniLMEmbedder()
+    chroma_client = chromadb.PersistentClient(path=str(chroma_path))
+    chroma_store = ChromaVectorStore(chroma_client, embedder.model_name)
+
+    def on_processed(doc: Document) -> None:
+        result = extract(
+            [doc], embedder, chroma_store, source_hints={doc.source_name: doc.doc_type}
+        )
+        if result.errors:
+            raise RuntimeError(f"extraction failed for {doc.id}: {result.errors}")
+        raw_store.save_document(dataclasses.replace(doc, status="processed"))
+
+    return on_processed
 
 
 def _configure_logging(level: str) -> None:
@@ -288,7 +337,15 @@ def main(argv: list[str] | None = None) -> int:
     poll_state = PollStateStore(poll_state_path)
     raw_store = RawStore(str(args.config.parent / "raw.db"))
     seen_store = SeenStore(str(args.config.parent / "seen.db"))
-    engine: Engine = ConcreteEngine(raw_store, seen_store, poll_state)
+
+    # Only wire the hot-path extraction callback (and its chromadb/sentence-transformers
+    # deps) if at least one enabled source actually needs it.
+    on_processed = None
+    if any(s.enabled and s.processing_mode == "hot" for s in sources):
+        on_processed = _build_hot_path_callback(raw_store, args.chroma_path)
+        log.info("hot_path_enabled", extra={"chroma_path": str(args.chroma_path)})
+
+    engine: Engine = ConcreteEngine(raw_store, seen_store, poll_state, on_processed)
 
     # --- Graceful shutdown ---
     # Signal sets stop_event. The current tick (or the current source within it)

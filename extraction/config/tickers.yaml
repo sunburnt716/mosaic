@@ -1,0 +1,51 @@
+# Ticker registry — maps each ticker symbol to the aliases (company-name variants) that
+# identify it in article/filing text. Used by extraction/tickers.py to populate
+# Document.tickers during extraction Phase 0 (see CLAUDE.md "Extraction layer").
+#
+# The bare ticker symbol itself is always matched too (case-sensitive, word-boundary —
+# e.g. "NVDA"), in addition to the aliases listed here (case-insensitive, word-boundary).
+# Extend this list via config, not code — same convention as ingestion/config/sources.yaml.
+#
+# Starter set: well-known mega-caps across sectors, not an exhaustive market registry.
+tickers:
+  NVDA: ["Nvidia", "Nvidia Corporation"]
+  AAPL: ["Apple", "Apple Inc"]
+  MSFT: ["Microsoft", "Microsoft Corp", "Microsoft Corporation"]
+  GOOGL: ["Google", "Alphabet", "Alphabet Inc"]
+  AMZN: ["Amazon", "Amazon.com"]
+  META: ["Meta Platforms", "Facebook"]
+  TSLA: ["Tesla", "Tesla Inc", "Tesla Motors"]
+  JPM: ["JPMorgan", "JP Morgan", "JPMorgan Chase"]
+  BAC: ["Bank of America"]
+  GS: ["Goldman Sachs"]
+  XOM: ["Exxon", "ExxonMobil", "Exxon Mobil"]
+  CVX: ["Chevron"]
+  JNJ: ["Johnson & Johnson", "Johnson and Johnson"]
+  PFE: ["Pfizer"]
+  UNH: ["UnitedHealth", "UnitedHealth Group"]
+  WMT: ["Walmart"]
+  COST: ["Costco"]
+  HD: ["Home Depot"]
+  DIS: ["Disney", "Walt Disney"]
+  NFLX: ["Netflix"]
+  INTC: ["Intel"]
+  AMD: ["Advanced Micro Devices"]
+  CRM: ["Salesforce"]
+  ORCL: ["Oracle"]
+  IBM: ["International Business Machines"]
+  BA: ["Boeing"]
+  GE: ["General Electric"]
+  F: ["Ford", "Ford Motor"]
+  GM: ["General Motors"]
+  KO: ["Coca-Cola", "Coca Cola"]
+  PEP: ["PepsiCo", "Pepsi"]
+  MCD: ["McDonald's", "McDonalds"]
+  SBUX: ["Starbucks"]
+  NKE: ["Nike"]
+  V: ["Visa"]
+  MA: ["Mastercard"]
+  PYPL: ["PayPal"]
+  ADBE: ["Adobe"]
+  QCOM: ["Qualcomm"]
+  UBER: ["Uber"]
+  ABNB: ["Airbnb"]

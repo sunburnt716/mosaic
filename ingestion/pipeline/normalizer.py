@@ -15,8 +15,6 @@ SourceConfig) — never read from content.
 This function is pure: same input always yields the same output, no I/O, no state.
 """
 
-import html
-import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
@@ -24,11 +22,8 @@ from urllib.parse import urlparse
 from ingestion.core.document import Document
 from ingestion.core.source_config import SourceConfig
 from ingestion.pipeline.hashing import content_hash, document_id, identity_key
+from ingestion.pipeline.html_text import clean_html
 from ingestion.pipeline.transforms import get_transform
-
-_TAG_RE = re.compile(r"<[^>]+>")
-_BLOCK_CLOSE_RE = re.compile(r"(?i)</(p|div|li|h[1-6]|section|article)>")
-_BR_RE = re.compile(r"(?i)<br\s*/?>")
 
 # Standard adapter-output key for each Document field, overridable via field_mappings.
 _DEFAULT_FIELD_KEYS = {
@@ -45,18 +40,6 @@ class NormalizationError(Exception):
 
     Covers missing/unparseable required fields (url, published_date, source_name).
     """
-
-
-def _clean_html(raw_html: str | None) -> str:
-    """Strip HTML to clean plain text, preserving paragraph boundaries as newlines."""
-    if not raw_html:
-        return ""
-    text = _BLOCK_CLOSE_RE.sub("\n", raw_html)
-    text = _BR_RE.sub("\n", text)
-    text = _TAG_RE.sub("", text)
-    text = html.unescape(text)
-    lines = [" ".join(line.split()) for line in text.splitlines()]
-    return "\n".join(line for line in lines if line).strip()
 
 
 def _parse_date(value) -> datetime:
@@ -107,7 +90,7 @@ def normalize(raw: dict, config: SourceConfig, fetched_at: datetime) -> Document
     published_date = _parse_date(_field(raw, config, "published_date"))
 
     title = _field(raw, config, "title") or ""
-    body = _clean_html(_field(raw, config, "body"))
+    body = clean_html(_field(raw, config, "body"))
     article_id = _field(raw, config, "source_article_id") or url
     raw_payload = raw.get("raw_payload", raw)
 

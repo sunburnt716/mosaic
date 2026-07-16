@@ -230,6 +230,21 @@ class TestLoadSourcesOptionalFields:
         sources = load_sources(p)
         assert sources[0].doc_type == "article"
 
+    def test_processing_mode_hot_accepted(self, tmp_path: Path):
+        p = write_yaml(tmp_path, minimal_config(minimal_entry(processing_mode="hot")))
+        sources = load_sources(p)
+        assert sources[0].processing_mode == "hot"
+
+    def test_processing_mode_invalid_raises(self, tmp_path: Path):
+        p = write_yaml(tmp_path, minimal_config(minimal_entry(processing_mode="lukewarm")))
+        with pytest.raises(ValueError, match="processing_mode"):
+            load_sources(p)
+
+    def test_processing_mode_defaults_to_cold(self, tmp_path: Path):
+        p = write_yaml(tmp_path, minimal_config(minimal_entry()))
+        sources = load_sources(p)
+        assert sources[0].processing_mode == "cold"
+
     def test_enabled_false_source_still_loaded(self, tmp_path: Path):
         # Filtering disabled sources is run.py's job, not load_sources.
         p = write_yaml(tmp_path, minimal_config(minimal_entry(enabled=False)))

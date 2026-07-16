@@ -36,11 +36,13 @@ import dataclasses
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Callable, Protocol
 
 from ingestion.adapters.base import FetchError, NotModifiedSignal, TransportError
 from ingestion.adapters.registry import get_adapter
+from ingestion.core.document import Document
 from ingestion.core.source_config import SourceConfig
+from ingestion.pipeline.body_enrichment import FetchUrl, default_fetch_url, enrich_body
 from ingestion.pipeline.dedup import DedupResult, classify
 from ingestion.pipeline.normalizer import NormalizationError, normalize
 from ingestion.pipeline.quality import check as quality_check
@@ -107,6 +109,9 @@ class SourceResult:
     errors: int = 0
     # per-record contract failures: bad record dropped, rest of batch kept
     dropped_records: int = 0
+    # hot-path extraction failures (per-document; extraction itself is isolated so
+    # these never abort the source, mirroring dropped_records)
+    extraction_errors: int = 0
     # whole batch refused fail-closed at the transport/parse layer
     rejected_transport: bool = False
     skipped_304: bool = False
@@ -132,6 +137,15 @@ class ConcreteEngine:
 
     All side effects (fetch, store, seen-store update, poll-state update) are
     coordinated here; the pipeline stages themselves (normalizer, dedup) are pure.
+
+    `on_processed` is the hot-path extraction seam. This module must never import
+    `extraction.*` directly (see tests/test_handoff.py's TestNoDownstreamCoupling — the
+    raw store is meant to be the only seam between ingestion and extraction, since the
+    two run on different clocks). So instead of calling extraction code here, a stored
+    document for a `processing_mode: hot` source is handed to this injected callback.
+    `ingestion/run.py`'s `main()` (the composition root) is the one place that actually
+    imports `extraction.extraction_engine.extract` and builds the closure passed in
+    here; ConcreteEngine itself stays agnostic to what "processed" means downstream.
     """
 
     def __init__(
@@ -139,10 +153,16 @@ class ConcreteEngine:
         raw_store: RawStore,
         seen_store: SeenStore,
         poll_state_store: PollStateStore,
+        on_processed: Callable[[Document], None] | None = None,
+        body_fetcher: FetchUrl = default_fetch_url,
     ) -> None:
         self._raw_store = raw_store
         self._seen_store = seen_store
         self._poll_state_store = poll_state_store
+        self._on_processed = on_processed
+        # Injected so enrichment fetches (e.g. EDGAR filing bodies) stay offline-testable;
+        # only sources with SourceConfig.body_fetch set ever trigger it.
+        self._body_fetcher = body_fetcher
 
     def process_source(self, source: SourceConfig) -> None:
         result = SourceResult(source_name=source.name)
@@ -195,6 +215,12 @@ class ConcreteEngine:
             new_etag = raw.pop("_etag", new_etag)
             new_last_modified = raw.pop("_last_modified", new_last_modified)
 
+            # Body enrichment (opt-in per source): fetch the real page text and replace the
+            # feed snippet BEFORE normalize, so content_hash/document_id reflect it. Best-
+            # effort — a failed fetch returns the record unchanged (keeps the summary).
+            if config.body_fetch:
+                raw = enrich_body(raw, config, fetch_url=self._body_fetcher)
+
             try:
                 doc = normalize(raw, config, fetched_at)
             except NormalizationError as exc:
@@ -244,9 +270,20 @@ class ConcreteEngine:
             else:  # NEW
                 result.new += 1
 
+            # --- Hot path: extract inline for processing_mode="hot" sources. Isolated
+            # per document so an extraction failure never aborts the rest of the batch,
+            # matching the per-record isolation used for NormalizationError above. ---
+            if config.processing_mode == "hot" and self._on_processed is not None:
+                try:
+                    self._on_processed(doc)
+                except Exception:
+                    result.extraction_errors += 1
+                    _log.exception("Hot-path extraction failed for %s/%s", config.name, doc.id)
+
         self._update_poll_state(config.name, fetched_at, new_etag, new_last_modified)
         _log.info(
-            "Source %s: fetched=%d new=%d l1=%d l2=%d l3=%d dropped=%d errors=%d warnings=%d",
+            "Source %s: fetched=%d new=%d l1=%d l2=%d l3=%d dropped=%d errors=%d "
+            "extraction_errors=%d warnings=%d",
             config.name,
             result.fetched,
             result.new,
@@ -255,6 +292,7 @@ class ConcreteEngine:
             result.l3_near_duplicate,
             result.dropped_records,
             result.errors,
+            result.extraction_errors,
             len(report.warnings),
         )
 
