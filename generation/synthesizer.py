@@ -28,12 +28,19 @@ import os
 import time
 from typing import Any, Callable
 
-GEMINI_MODEL = "gemini-2.0-flash"
+# `gemini-flash-latest` is the current Flash alias the API serves; the pinned `gemini-2.0-flash`
+# id returned 429 RESOURCE_EXHAUSTED with `limit: 0` (no free-tier quota granted for it), which
+# the fail-closed retry loop below turned into a silent INSUFFICIENT_DATA marker on every call.
+GEMINI_MODEL = "gemini-flash-latest"
 TEMPERATURE = 0.3
 MAX_OUTPUT_TOKENS = 800
 
-DEFAULT_MAX_ATTEMPTS = 3
-DEFAULT_BASE_BACKOFF_SECONDS = 1.0
+# Patient enough to ride out the free-tier's transient 503 "high demand" spikes and per-minute
+# rate-limit windows (backoffs of 2/4/8/16s span ~30s across 5 attempts). These are the common
+# failure mode against the free tier, not hard errors; too-few/too-fast retries surface them as
+# a silent INSUFFICIENT_DATA marker (zero citations) instead of the eventual success.
+DEFAULT_MAX_ATTEMPTS = 5
+DEFAULT_BASE_BACKOFF_SECONDS = 2.0
 
 INSUFFICIENT_DATA_MARKER = "INSUFFICIENT_DATA: synthesis failed after retries"
 

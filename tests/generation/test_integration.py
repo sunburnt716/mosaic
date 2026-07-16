@@ -61,14 +61,21 @@ class TestGoldenPath:
             citation_fields_present=True,
         )
 
-        # Phase 1: Prompt Assembly.
-        prompt = PromptBuilder().build(
+        # Phase 1: Prompt Assembly. The prompt offers short handles (S1, …); the real 64-hex
+        # chunk_id is never shown to the model, only kept in the returned handle map.
+        assembled = PromptBuilder().build(
             retrieval_output, "What's the latest on NVDA earnings?", [], UserProfile()
         )
-        assert "doc-nvda-earnings#0" in prompt
-        assert "doc-nvda-bloomberg#0" in prompt
+        assert set(assembled.chunk_id_by_handle.values()) == {
+            "doc-nvda-earnings#0",
+            "doc-nvda-bloomberg#0",
+        }
+        assert "doc-nvda-earnings#0" not in assembled.text
+        assert "CHUNK_ID: S1" in assembled.text
 
-        # Phase 2: Synthesis (fake Gemini client referencing the real chunk IDs from the prompt).
+        # Phase 2: Synthesis (fake Gemini client). The engine would translate the model's cited
+        # handle back to a chunk_id before validation; here we test the generation phases with
+        # the resolved chunk_ids directly (the handle round-trip is covered in test_engine.py).
         gemini_reply = (
             "CLAIM: NVIDIA reported record quarterly revenue driven by AI chip demand.\n"
             "SOURCE_CHUNK_ID: doc-nvda-earnings#0\n"
@@ -79,7 +86,7 @@ class TestGoldenPath:
             "CONFIDENCE: high\n"
             "---"
         )
-        raw_text = Synthesizer(client=_FakeGeminiClient([gemini_reply])).synthesize(prompt)
+        raw_text = Synthesizer(client=_FakeGeminiClient([gemini_reply])).synthesize(assembled.text)
         assert raw_text == gemini_reply
 
         # Phase 3: Claim Parsing.
@@ -137,7 +144,7 @@ class TestGoldenPathWithPartialGrounding:
             retrieval_confidence=0.8,
             citation_fields_present=True,
         )
-        prompt = PromptBuilder().build(retrieval_output, "Fed rates?", [], UserProfile())
+        assembled = PromptBuilder().build(retrieval_output, "Fed rates?", [], UserProfile())
 
         # Gemini hallucinates a second claim with a chunk ID that was never retrieved, and
         # its text has zero word overlap with anything real, so the semantic fallback fails
@@ -152,7 +159,7 @@ class TestGoldenPathWithPartialGrounding:
             "CONFIDENCE: low\n"
             "---"
         )
-        raw_text = Synthesizer(client=_FakeGeminiClient([gemini_reply])).synthesize(prompt)
+        raw_text = Synthesizer(client=_FakeGeminiClient([gemini_reply])).synthesize(assembled.text)
         claims = ClaimParser().parse(raw_text)
         chunks_by_id = {chunk.chunk_id: chunk}
 
@@ -186,7 +193,7 @@ class TestGoldenPathAllHallucinated:
             retrieval_confidence=0.7,
             citation_fields_present=True,
         )
-        prompt = PromptBuilder().build(retrieval_output, "q", [], UserProfile())
+        assembled = PromptBuilder().build(retrieval_output, "q", [], UserProfile())
 
         gemini_reply = (
             "CLAIM: A completely fabricated claim with no basis.\n"
@@ -194,7 +201,7 @@ class TestGoldenPathAllHallucinated:
             "CONFIDENCE: low\n"
             "---"
         )
-        raw_text = Synthesizer(client=_FakeGeminiClient([gemini_reply])).synthesize(prompt)
+        raw_text = Synthesizer(client=_FakeGeminiClient([gemini_reply])).synthesize(assembled.text)
         claims = ClaimParser().parse(raw_text)
         chunks_by_id = {chunk.chunk_id: chunk}
 

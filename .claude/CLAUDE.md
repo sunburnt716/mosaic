@@ -155,6 +155,19 @@ never per source) → `pipeline/` (`normalizer`, `dedup`, `hashing`, `quality`, 
   EDGAR discovery instead runs through the generic RSS adapter pointed at the `getcurrent`
   Atom feed, with the `edgar_filing_url` transform (`pipeline/transforms.py`) cleaning the
   entry title. `"edgar"` is deliberately **not** a valid `SourceConfig.adapter` value.
+- **Body enrichment fetches the real filing body** (`pipeline/body_enrichment.py`). The
+  getcurrent Atom feed only carries an index-page snippet (~72 chars), so the `sec-edgar`
+  source sets `body_fetch: edgar_filing`: at ingest, a two-hop fetch (filing index page →
+  primary document → `clean_html`) replaces `raw_body` **before** `normalize()`, so
+  `content_hash`/`document_id` reflect the real body and the raw store stays
+  offline-replayable. It's **best-effort** — any fetch/parse failure falls back to the feed
+  snippet, never dropping the record — and the network sits behind an injectable `fetch_url`
+  (default lazy-`requests`, throttled for SEC's ≤10 req/s), so the offline suite runs on
+  fixtures. Strategies register like transforms (`@register`), keyed on
+  `SourceConfig.body_fetch`. `clean_html` is the shared HTML→text helper
+  (`pipeline/html_text.py`) used by both the normalizer and enrichment. Measured: a live
+  8-K went from a ~72-char snippet to ~35k chars of filing text. Article-body enrichment
+  (FT/Reuters) is deferred — FT is paywalled.
 - **Quality gate (`pipeline/quality.py`) is advisory only** — it warns on collapsed
   batches, empty-body rates, fallback titles, etc., but never drops or blocks. Per-source
   thresholds (`SourceConfig.max_fallback_title_rate`, `max_empty_body_rate`, `min_records`,

@@ -9,6 +9,7 @@ citation-suspect guard), not the quality of any real model.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from evals.harness import (
@@ -16,6 +17,7 @@ from evals.harness import (
     BUCKET_NO_CANDIDATES,
     BUCKET_RETRIEVAL_ONLY,
     BUCKET_STRONG_UNCITED,
+    BUCKET_SYNTH_FAILED,
     BUCKET_THIN,
     VERDICT_CORRECT_ANSWER,
     VERDICT_CORRECT_DECLINE,
@@ -27,6 +29,7 @@ from evals.harness import (
     load_questions,
     summarize,
 )
+from generation.synthesizer import INSUFFICIENT_DATA_MARKER
 from retrieval.contracts import RoutingResult
 
 _NOW = datetime(2026, 7, 13, tzinfo=timezone.utc)
@@ -88,16 +91,39 @@ class FakeRouter:
         )
 
 
+def _first_handle(prompt):
+    """The first source handle (S1, …) the prompt offered, or None if it offered none."""
+    m = re.search(r"^CHUNK_ID: (\S+)", prompt, re.MULTILINE)
+    return m.group(1) if m else None
+
+
 class FakeSynthesizer:
-    """Cites `cite_chunk_id` when it appears in the prompt; empty (decline) otherwise."""
+    """Simulates a well-behaved model: cites the first source *handle* the prompt offered.
+
+    `cite_chunk_id` (kept for call-site readability) toggles whether this fake grounds at all;
+    when falsy it declines with empty output. When it grounds, it cites the handle the prompt
+    actually shows — the engine translates that back to a real chunk_id, mirroring production,
+    rather than a hardcoded raw chunk_id the prompt never exposes.
+    """
 
     def __init__(self, *, cite_chunk_id=None):
-        self._cite = cite_chunk_id
+        self._should_cite = bool(cite_chunk_id)
 
     def synthesize(self, prompt):
-        if self._cite and self._cite in prompt:
-            return f"CLAIM: chunk text 0\nSOURCE_CHUNK_ID: {self._cite}\nCONFIDENCE: high\n---"
-        return ""
+        if not self._should_cite:
+            return ""
+        handle = _first_handle(prompt)
+        if handle is None:
+            return ""
+        return f"CLAIM: chunk text 0\nSOURCE_CHUNK_ID: {handle}\nCONFIDENCE: high\n---"
+
+
+class _MarkerSynthesizer:
+    """Simulates a failed Gemini *call*: returns the synthesizer's fail-closed marker verbatim,
+    exactly as the real Synthesizer does after exhausting retries on a 429/503."""
+
+    def synthesize(self, prompt):
+        return INSUFFICIENT_DATA_MARKER
 
 
 def _q(qid, expected, intent="news-synthesis"):
@@ -153,6 +179,15 @@ class TestBehaviorFirstBuckets:
         assert r.bucket == BUCKET_THIN
         assert r.verdict == VERDICT_MISSED_ANSWER
 
+    def test_failed_gemini_call_is_synth_failed_not_strong_uncited(self):
+        # Strong retrieval, but the Gemini *call* failed (fail-closed marker). This must NOT be
+        # slandered as a citation bug (strong-uncited) — it's an infrastructure failure.
+        r = _run(_q("a", "answer"), FakeCollection([0.05]), _MarkerSynthesizer())
+        assert r.has_signal is True
+        assert r.synthesis_failed is True
+        assert r.bucket == BUCKET_SYNTH_FAILED
+        assert r.verdict == VERDICT_MISSED_ANSWER  # we did miss it, just for infra reasons
+
     def test_out_of_scope_cited_is_over_answered(self):
         r = _run(
             _q("r", "redirect", intent="out-of-scope"),
@@ -203,7 +238,8 @@ class TestSummary:
         class MarkerSynth:
             def synthesize(self, prompt):
                 if "IN-SCOPE" in prompt:
-                    return "CLAIM: chunk text 0\nSOURCE_CHUNK_ID: doc-0#0\nCONFIDENCE: high\n---"
+                    handle = _first_handle(prompt)
+                    return f"CLAIM: chunk text 0\nSOURCE_CHUNK_ID: {handle}\nCONFIDENCE: high\n---"
                 return ""
 
         questions = [
@@ -240,6 +276,24 @@ class TestSummary:
         assert s.strong_uncited_in_scope == 2
         assert s.citation_path_suspect is True
         assert s.answerable_in_scope_rate == 0.0
+
+    def test_synth_failure_does_not_trip_citation_suspect(self):
+        # In-scope questions retrieve strongly but the Gemini call fails on every one. This is
+        # an infrastructure failure, not a citation bug: it must count as synth-failed and must
+        # NOT trip citation_path_suspect (the bug the whole bucket exists to prevent).
+        questions = [_q("in1", "answer"), _q("in2", "answer")]
+        results = evaluate(
+            questions,
+            collection=FakeCollection([0.05, 0.1, 0.2]),
+            router=FakeRouter(),
+            synthesizer=_MarkerSynthesizer(),
+            now=_NOW,
+        )
+        s = summarize(results)
+        assert s.synth_failed_count == 2
+        assert s.strong_uncited_in_scope == 0
+        assert s.citation_path_suspect is False
+        assert s.answerable_in_scope_rate == 0.0  # still honestly missed, just not a code bug
 
     def test_out_of_scope_strong_uncited_does_not_trip_suspect(self):
         # An out-of-scope question that retrieves strongly and correctly declines must NOT

@@ -42,6 +42,7 @@ from ingestion.adapters.base import FetchError, NotModifiedSignal, TransportErro
 from ingestion.adapters.registry import get_adapter
 from ingestion.core.document import Document
 from ingestion.core.source_config import SourceConfig
+from ingestion.pipeline.body_enrichment import FetchUrl, default_fetch_url, enrich_body
 from ingestion.pipeline.dedup import DedupResult, classify
 from ingestion.pipeline.normalizer import NormalizationError, normalize
 from ingestion.pipeline.quality import check as quality_check
@@ -153,11 +154,15 @@ class ConcreteEngine:
         seen_store: SeenStore,
         poll_state_store: PollStateStore,
         on_processed: Callable[[Document], None] | None = None,
+        body_fetcher: FetchUrl = default_fetch_url,
     ) -> None:
         self._raw_store = raw_store
         self._seen_store = seen_store
         self._poll_state_store = poll_state_store
         self._on_processed = on_processed
+        # Injected so enrichment fetches (e.g. EDGAR filing bodies) stay offline-testable;
+        # only sources with SourceConfig.body_fetch set ever trigger it.
+        self._body_fetcher = body_fetcher
 
     def process_source(self, source: SourceConfig) -> None:
         result = SourceResult(source_name=source.name)
@@ -209,6 +214,12 @@ class ConcreteEngine:
             # Adapters may embed validator headers in the raw dict for the engine to capture.
             new_etag = raw.pop("_etag", new_etag)
             new_last_modified = raw.pop("_last_modified", new_last_modified)
+
+            # Body enrichment (opt-in per source): fetch the real page text and replace the
+            # feed snippet BEFORE normalize, so content_hash/document_id reflect it. Best-
+            # effort — a failed fetch returns the record unchanged (keeps the summary).
+            if config.body_fetch:
+                raw = enrich_body(raw, config, fetch_url=self._body_fetcher)
 
             try:
                 doc = normalize(raw, config, fetched_at)

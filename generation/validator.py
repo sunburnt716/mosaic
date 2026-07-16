@@ -13,10 +13,14 @@ Per claim, two paths, in order:
      chunk's own embedding (`cosine_similarity`, reused from `ingestion.pipeline.dedup` — same
      "plain code + embeddings before reaching for an LLM" reuse this codebase already applies
      to L3 dedup and retrieval clustering). Accept the best match at or above
-     `SEMANTIC_FALLBACK_THRESHOLD` (0.85, the spec's literal number — no discrepancy to flag
-     here, unlike the retrieval L3 threshold). This is graceful degradation for an ID typo,
-     not a license to invent grounding: a claim with empty text (Phase 3's fully-malformed
-     case) or with no chunk having an embedding never reaches this path's acceptance branch.
+     `SEMANTIC_FALLBACK_THRESHOLD` (0.75). **Deliberate deviation from the spec's literal 0.85:**
+     since the prompt now hands Gemini short reproducible handles (S1, S2, …) rather than the
+     unreproducible 64-hex chunk_id, the direct-ID path carries the common case, and this
+     fallback is the safety net for a *paraphrased* claim whose handle the model dropped or
+     garbled — 0.85 was too strict to catch those against thin, one-sentence chunk embeddings.
+     This is graceful degradation for a missed handle, not a license to invent grounding: a
+     claim with empty text (Phase 3's fully-malformed case) or with no chunk having an
+     embedding never reaches this path's acceptance branch.
   3. **Fail.** Neither path grounds the claim -> `is_grounded = False`,
      `supporting_chunk_id = None`, `validation_confidence = 0.0`.
 
@@ -32,13 +36,13 @@ from __future__ import annotations
 
 from typing import Callable
 
+from extraction.utils.embedding import embed_text
 from generation.contracts import ParsedClaim, ValidatedClaim
 from ingestion.pipeline.dedup import cosine_similarity
-from extraction.utils.embedding import embed_text
 from retrieval.contracts import RetrievedChunk
 
 DIRECT_LOOKUP_CONFIDENCE = 1.0
-SEMANTIC_FALLBACK_THRESHOLD = 0.85
+SEMANTIC_FALLBACK_THRESHOLD = 0.75  # safety net for a paraphrased claim; see module docstring
 UNGROUNDED_VALIDATION_CONFIDENCE = 0.0
 
 

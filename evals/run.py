@@ -28,6 +28,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -125,16 +126,25 @@ def _print_summary(summary) -> None:
     print("SUMMARY")
     print("=" * 70)
 
+    if summary.synth_failed_count:
+        print("  " + "!" * 66)
+        print(
+            f"  !! SYNTHESIS INFRASTRUCTURE FAILED on {summary.synth_failed_count} question(s): "
+            f"the Gemini call returned"
+        )
+        print("  !! the fail-closed marker (429 quota / 503 / SDK error) — NOT a citation-path")
+        print("  !! bug and NOT thin coverage. The answerable-in-scope rate below is capped by")
+        print("  !! this, not by the citation code. Re-run when the key/quota is healthy.")
+        print("  " + "!" * 66)
+
     if summary.citation_path_suspect:
         print("  " + "!" * 66)
         print(
             f"  !! CITATION PATH SUSPECT: {summary.strong_uncited_in_scope} in-scope "
-            f"question(s) had strong retrieval (top1 >= floor)"
+            f"question(s) had strong retrieval,"
         )
-        print("  !! but produced no citation. The headline rates below are NOT trustworthy")
-        print(
-            "  !! until the citation path is fixed. Diagnose with: python -m evals.run --trace <id>"
-        )
+        print("  !! synthesis SUCCEEDED, yet produced no citation. The headline rates below are")
+        print("  !! NOT trustworthy until fixed. Diagnose with: python -m evals.run --trace <id>")
         print("  " + "!" * 66)
 
     print(f"  total questions: {summary.total}   synthesis ran: {summary.synthesis_ran}")
@@ -154,6 +164,7 @@ def _print_summary(summary) -> None:
         f"  filter-starvation: no-candidates={summary.no_candidates_count}  "
         f"filter-fallback-fired={summary.filter_fallback_count}"
     )
+    print(f"  synthesis-failed (Gemini call errored): {summary.synth_failed_count}")
     print(f"  avg top1 similarity (in-scope): {_fmt(summary.avg_top1_in_scope)}")
     if not summary.synthesis_ran:
         print("\n  NOTE: retrieval-only run — citation-dependent buckets/rates are blank; only")
@@ -170,13 +181,15 @@ def _offered_chunk_ids(prompt: str | None) -> list[str]:
 
 def _validation_reason(vc) -> str:
     """Infer why a claim did/didn't ground from its validation_confidence (see validator.py)."""
+    from generation.validator import SEMANTIC_FALLBACK_THRESHOLD as thr
+
     if vc.is_grounded and vc.validation_confidence >= 1.0:
         return "direct-hit (ID matched an offered chunk)"
     if vc.is_grounded:
-        return f"semantic match ({vc.validation_confidence:.2f} >= 0.85)"
+        return f"semantic match ({vc.validation_confidence:.2f} >= {thr})"
     if vc.validation_confidence > 0.0:
-        return f"semantic below threshold ({vc.validation_confidence:.2f} < 0.85)"
-    return "no match (ID absent AND no chunk >= 0.85 / no embeddings)"
+        return f"semantic below threshold ({vc.validation_confidence:.2f} < {thr})"
+    return f"no match (ID absent AND no chunk >= {thr} / no embeddings)"
 
 
 def _diagnosis(result, offered: list[str], parsed_claims) -> str:
@@ -202,8 +215,10 @@ def _diagnosis(result, offered: list[str], parsed_claims) -> str:
             "MANGLED IDs — cited IDs don't match any offered CHUNK_ID. "
             "Switch the prompt to short handles."
         )
+    from generation.validator import SEMANTIC_FALLBACK_THRESHOLD as thr
+
     return (
-        "IDs present but ungrounded — semantic fallback below 0.85; "
+        f"IDs present but ungrounded — semantic fallback below {thr}; "
         "revisit the threshold / embeddings."
     )
 
@@ -323,13 +338,22 @@ def main(argv: list[str] | None = None) -> int:
             n_results=args.n_results,
         )
 
-    results = evaluate(
-        questions,
-        collection=collection,
-        router=router,
-        synthesizer=synthesizer,
-        n_results=args.n_results,
-    )
+    # TEST-ONLY THROTTLE — not part of the product read path. evaluate() fires questions
+    # back-to-back, which burns through the Gemini free-tier rate limit fast; pacing one
+    # question every 500ms here (not in evals/harness.py) keeps this purely a local eval-run
+    # concern.
+    results = []
+    for question in questions:
+        results.extend(
+            evaluate(
+                [question],
+                collection=collection,
+                router=router,
+                synthesizer=synthesizer,
+                n_results=args.n_results,
+            )
+        )
+        time.sleep(0.5)
     summary = summarize(results)
 
     _print_table(results)

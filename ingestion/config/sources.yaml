@@ -45,6 +45,9 @@ sources:
     poll_interval: "2m"
     doc_type: filing
     transform: edgar_filing_url
+    # Fetch the real filing body (index page -> primary document) at ingest; the getcurrent
+    # feed only carries an index-page snippet. See pipeline/body_enrichment.py.
+    body_fetch: edgar_filing
     field_mappings: {}
     auth: {}
     enabled: true

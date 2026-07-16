@@ -18,8 +18,14 @@ names what the *system did*, so a broken citation path can't hide as thinness:
   - no-candidates    n == 0. Nothing survived retrieval — a filter/retrieval bug (e.g. a
                      ticker filter that matched nothing), NEVER "thin". Distinct on purpose.
   - cited            produced an answer with >=1 citation.
-  - strong-uncited   top1 >= floor but no citation — a STRONG match the citation path failed
-                     to ground. A generation bug, not a coverage problem. The smoking gun.
+  - synth-failed     synthesis ran but the Gemini *call itself* failed (fail-closed marker:
+                     429 quota / 503 / etc.). NOT a citation bug and NOT thinness — an
+                     infrastructure failure that produces the same zero-citation outcome, so
+                     it must be named separately or it hides as `strong-uncited` and slanders
+                     the citation path (exactly the misread this bucket exists to prevent).
+  - strong-uncited   top1 >= floor, synthesis SUCCEEDED, but no citation — a STRONG match the
+                     citation path failed to ground. A generation bug, not coverage. The
+                     smoking gun (now genuinely so, with synth-failed peeled off).
   - thin             n > 0, top1 < floor, no citation — genuinely weak signal. ADD FEEDS.
   - retrieval-only   synthesis was skipped (no Gemini); citation is unobservable.
 
@@ -61,9 +67,10 @@ _DEFAULT_QUESTIONS_PATH = Path(__file__).parent / "questions.yaml"
 # used when synthesis is skipped; with synthesis, the citable-answer outcome decides buckets.
 DEFAULT_SIMILARITY_FLOOR = 0.30
 
-# Behavior-first buckets — keyed on (n, top1, cited), never on the question's label.
+# Behavior-first buckets — keyed on (n, top1, cited, synth_failed), never on the question's label.
 BUCKET_NO_CANDIDATES = "no-candidates"
 BUCKET_CITED = "cited"
+BUCKET_SYNTH_FAILED = "synth-failed"
 BUCKET_STRONG_UNCITED = "strong-uncited"
 BUCKET_THIN = "thin"
 BUCKET_RETRIEVAL_ONLY = "retrieval-only"
@@ -101,6 +108,9 @@ class QuestionResult:
     # --- synthesis metrics (None in retrieval-only mode) ---
     synthesis_ran: bool
     synthesis_citable: Optional[bool]
+    # True when the Gemini call failed and the synthesizer returned its fail-closed marker
+    # (429/503/etc.) — distinct from "answered but nothing grounded".
+    synthesis_failed: bool
     claims_total: Optional[int]
     claims_grounded: Optional[int]
     validator_passed: Optional[bool]
@@ -133,6 +143,9 @@ class EvalSummary:
     # citation path is likely broken and the headline rates above are not trustworthy.
     strong_uncited_count: int
     strong_uncited_in_scope: int
+    # synthesis-infrastructure failures (Gemini call returned the fail-closed marker) — an API
+    # health signal, deliberately NOT folded into strong-uncited or citation_path_suspect.
+    synth_failed_count: int
     no_candidates_count: int
     filter_fallback_count: int
     citation_path_suspect: bool
@@ -174,7 +187,11 @@ def _similarity_at_ranks(result: Any) -> tuple[int, Optional[float], Optional[fl
 
 
 def _bucket(
-    n_retrieved: int, has_signal: bool, synthesis_ran: bool, synthesis_citable: Optional[bool]
+    n_retrieved: int,
+    has_signal: bool,
+    synthesis_ran: bool,
+    synthesis_citable: Optional[bool],
+    synthesis_failed: bool,
 ) -> str:
     """Sort one question into a behavior-first bucket — from what the system DID, not its label.
 
@@ -187,8 +204,12 @@ def _bucket(
         return BUCKET_RETRIEVAL_ONLY
     if synthesis_citable:
         return BUCKET_CITED
-    # Not cited, with candidates: strong retrieval that didn't ground is a citation bug;
-    # weak retrieval is genuine thinness.
+    # Not cited. A failed Gemini *call* (fail-closed marker) is infrastructure, not a citation
+    # bug — peel it off before the strong/thin split so it can't masquerade as strong-uncited.
+    if synthesis_failed:
+        return BUCKET_SYNTH_FAILED
+    # Synthesis genuinely answered but nothing cited: strong retrieval that didn't ground is a
+    # citation bug; weak retrieval is genuine thinness.
     return BUCKET_STRONG_UNCITED if has_signal else BUCKET_THIN
 
 
@@ -231,6 +252,7 @@ def evaluate(
         has_signal = top1 is not None and top1 >= similarity_floor
 
         synthesis_ran = qr.answer is not None or qr.validated_claims is not None
+        synthesis_failed = synthesis_ran and qr.synthesis_failed
         if synthesis_ran:
             claims = qr.validated_claims or []
             claims_total = len(claims)
@@ -243,7 +265,9 @@ def evaluate(
             validator_passed = synthesis_citable = None
             confidence_warning = None
 
-        bucket = _bucket(n_retrieved, has_signal, synthesis_ran, synthesis_citable)
+        bucket = _bucket(
+            n_retrieved, has_signal, synthesis_ran, synthesis_citable, synthesis_failed
+        )
         results.append(
             QuestionResult(
                 id=q.id,
@@ -256,6 +280,7 @@ def evaluate(
                 has_signal=has_signal,
                 synthesis_ran=synthesis_ran,
                 synthesis_citable=synthesis_citable,
+                synthesis_failed=synthesis_failed,
                 claims_total=claims_total,
                 claims_grounded=claims_grounded,
                 validator_passed=validator_passed,
@@ -294,6 +319,7 @@ def summarize(results: list[QuestionResult]) -> EvalSummary:
 
     strong_uncited = sum(1 for r in results if r.bucket == BUCKET_STRONG_UNCITED)
     strong_uncited_in_scope = sum(1 for r in in_scope if r.bucket == BUCKET_STRONG_UNCITED)
+    synth_failed = sum(1 for r in results if r.bucket == BUCKET_SYNTH_FAILED)
     no_candidates = sum(1 for r in results if r.bucket == BUCKET_NO_CANDIDATES)
     filter_fallback_count = sum(1 for r in results if r.filter_fallback)
 
@@ -314,6 +340,7 @@ def summarize(results: list[QuestionResult]) -> EvalSummary:
         meaningful_abstention_rate=abstention_rate,
         strong_uncited_count=strong_uncited,
         strong_uncited_in_scope=strong_uncited_in_scope,
+        synth_failed_count=synth_failed,
         no_candidates_count=no_candidates,
         filter_fallback_count=filter_fallback_count,
         citation_path_suspect=(strong_uncited_in_scope > 0),

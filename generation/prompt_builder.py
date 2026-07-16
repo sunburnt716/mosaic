@@ -23,15 +23,36 @@ citation metadata" non-goal).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from generation.contracts import LensDoc
 from extraction.text_metrics import count_tokens
+from generation.contracts import LensDoc
 from retrieval.contracts import RetrievedChunk, StoryCluster, UserProfile
 from retrieval.output import RetrievalOutput
 
 DEFAULT_TOKEN_BUDGET = 1500
 DEFAULT_TOP_CLUSTERS = 5
+
+# The real chunk_id is a 64-hex-char content hash + "#ordinal" — an LLM cannot reproduce it
+# verbatim, so it can never cite correctly. We show it a short, reproducible handle (S1, S2, …)
+# instead and translate back to the real chunk_id before grounding (see query/engine.py).
+HANDLE_PREFIX = "S"
+
+
+@dataclass(frozen=True)
+class AssembledPrompt:
+    """The built prompt plus the handle -> real chunk_id map for the sources shown in it.
+
+    `chunk_id_by_handle` covers exactly the chunks that survived the token budget (each got a
+    `CHUNK_ID: S{n}` line). The caller uses it to translate Gemini's `SOURCE_CHUNK_ID: S{n}`
+    back to the real chunk_id before validation — a handle the model didn't echo (or garbled)
+    is simply absent from the map and stays ungrounded.
+    """
+
+    text: str
+    chunk_id_by_handle: dict[str, str]
+
 
 # "Corroboration strength" — a cluster's corroboration label mapped to a numeric weight for
 # ranking which stories make the prompt. Not a re-ranking score (that's retrieval's job); this
@@ -47,7 +68,7 @@ GUARDRAILS = (
 
 FORMAT_CONTRACT = """OUTPUT FORMAT (follow exactly, no prose outside this format):
 CLAIM: <one factual claim, stated plainly>
-SOURCE_CHUNK_ID: <the CHUNK_ID of the source block that supports this claim>
+SOURCE_CHUNK_ID: <copy the short CHUNK_ID handle of the supporting source block exactly, e.g. S1>
 CONFIDENCE: high | medium | low
 ---
 (repeat the CLAIM/SOURCE_CHUNK_ID/CONFIDENCE/--- block for each claim)"""
@@ -69,12 +90,12 @@ def _flatten_chunks(clusters: list[StoryCluster]) -> list[RetrievedChunk]:
     return [chunk for cluster in clusters for chunk in cluster.chunks]
 
 
-def _render_chunk_block(chunk: RetrievedChunk) -> str:
+def _render_chunk_block(chunk: RetrievedChunk, handle: str) -> str:
     published = _format_epoch(chunk.published_epoch)
     section = chunk.section_label or "n/a"
     return (
         f"SOURCE: {chunk.source_name} (Tier {chunk.tier}) | Published: {published}\n"
-        f"CHUNK_ID: {chunk.chunk_id}\n"
+        f"CHUNK_ID: {handle}\n"
         f"SECTION: {section}\n"
         f"TEXT: {chunk.text}"
     )
@@ -118,7 +139,7 @@ class PromptBuilder:
         query: str,
         lens: list[LensDoc],
         profile: UserProfile,
-    ) -> str:
+    ) -> AssembledPrompt:
         selected_clusters = _select_top_clusters(retrieval.clusters, self._top_clusters)
         ranked_chunks = _flatten_chunks(selected_clusters)
 
@@ -134,12 +155,16 @@ class PromptBuilder:
         remaining_budget = self._token_budget - count_tokens(header)
 
         included_blocks: list[str] = []
+        chunk_id_by_handle: dict[str, str] = {}
         for chunk in ranked_chunks:
-            block = _render_chunk_block(chunk)
+            handle = f"{HANDLE_PREFIX}{len(included_blocks) + 1}"
+            block = _render_chunk_block(chunk, handle)
             block_tokens = count_tokens(block)
             if block_tokens > remaining_budget:
                 break  # this and every lower-ranked chunk after it are dropped
             included_blocks.append(block)
+            chunk_id_by_handle[handle] = chunk.chunk_id
             remaining_budget -= block_tokens
 
-        return header + "\n\n" + "\n\n".join(included_blocks)
+        text = header + "\n\n" + "\n\n".join(included_blocks)
+        return AssembledPrompt(text=text, chunk_id_by_handle=chunk_id_by_handle)

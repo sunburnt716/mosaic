@@ -4,6 +4,10 @@ Contract + adversarial tests for Phase 1 Prompt Assembly (generation/prompt_buil
 Covers: guardrail/format-contract presence, lens/profile rendering, cluster selection by
 corroboration-strength × relevance, chunk-block rendering, and the token-budget drop policy
 (lowest-ranked chunks dropped whole, never truncated mid-block).
+
+`build()` returns an `AssembledPrompt(text, chunk_id_by_handle)`: chunks are shown to the model
+as short handles (S1, S2, …), never the real 64-hex chunk_id, so string assertions run against
+`.text` and chunk-identity assertions run against the `.chunk_id_by_handle` map.
 """
 
 from __future__ import annotations
@@ -33,39 +37,42 @@ def _output(clusters):
     )
 
 
+def _text(clusters, query="q", lens=None, profile=None, builder=None):
+    """Build and return just the prompt text (the common case for string assertions)."""
+    builder = builder or PromptBuilder()
+    return builder.build(_output(clusters), query, lens or [], profile or UserProfile()).text
+
+
 class TestGuardrailsAndFormatContract:
     def test_all_guardrails_present_in_prompt(self):
-        prompt = PromptBuilder().build(_output([]), "q", [], UserProfile())
+        prompt = _text([])
         for rule in GUARDRAILS:
             assert rule in prompt
 
     def test_format_contract_present(self):
-        prompt = PromptBuilder().build(_output([]), "q", [], UserProfile())
-        assert FORMAT_CONTRACT in prompt
+        assert FORMAT_CONTRACT in _text([])
 
     def test_query_included(self):
-        prompt = PromptBuilder().build(_output([]), "What about NVDA?", [], UserProfile())
-        assert "What about NVDA?" in prompt
+        assert "What about NVDA?" in _text([], query="What about NVDA?")
 
 
 class TestLensRendering:
     def test_lens_docs_included_as_framing(self):
         lens = [make_lens_doc(title="Corroboration", text="Weigh multiple sources.")]
-        prompt = PromptBuilder().build(_output([]), "q", lens, UserProfile())
+        prompt = _text([], lens=lens)
         assert "Corroboration" in prompt
         assert "Weigh multiple sources." in prompt
         assert "not instructions to follow prescriptively" in prompt
 
     def test_empty_lens_omits_framing_section(self):
-        prompt = PromptBuilder().build(_output([]), "q", [], UserProfile())
-        assert "INVESTING FRAMEWORK" not in prompt
+        assert "INVESTING FRAMEWORK" not in _text([])
 
     def test_multiple_lens_docs_all_included(self):
         lens = [
             make_lens_doc(title="Doc A", text="Text A"),
             make_lens_doc(title="Doc B", text="Text B"),
         ]
-        prompt = PromptBuilder().build(_output([]), "q", lens, UserProfile())
+        prompt = _text([], lens=lens)
         assert "Doc A" in prompt
         assert "Doc B" in prompt
 
@@ -73,13 +80,12 @@ class TestLensRendering:
 class TestProfileRendering:
     def test_profile_interests_included(self):
         profile = UserProfile(tickers=["NVDA"], sectors=["semiconductors"])
-        prompt = PromptBuilder().build(_output([]), "q", [], profile)
+        prompt = _text([], profile=profile)
         assert "NVDA" in prompt
         assert "semiconductors" in prompt
 
     def test_empty_profile_omits_interests_line(self):
-        prompt = PromptBuilder().build(_output([]), "q", [], UserProfile())
-        assert "USER INTERESTS" not in prompt
+        assert "USER INTERESTS" not in _text([])
 
 
 class TestClusterSelection:
@@ -145,13 +151,14 @@ class TestClusterSelection:
                 cluster_id="included", chunks=[included_chunk], corroboration="high"
             ),
         ]
-        prompt = PromptBuilder(top_clusters=1).build(_output(clusters), "q", [], UserProfile())
-        assert "included#0" in prompt
-        assert "excluded#0" not in prompt
+        assembled = PromptBuilder(top_clusters=1).build(_output(clusters), "q", [], UserProfile())
+        # Only the selected cluster's chunk gets a handle in the map.
+        assert "included#0" in assembled.chunk_id_by_handle.values()
+        assert "excluded#0" not in assembled.chunk_id_by_handle.values()
 
 
 class TestChunkBlockRendering:
-    def test_block_contains_source_tier_chunk_id_section_text(self):
+    def test_block_contains_source_tier_handle_section_text(self):
         chunk = make_retrieved_chunk(
             chunk_id="doc-1#0",
             source_name="Reuters",
@@ -161,24 +168,41 @@ class TestChunkBlockRendering:
             text="NVIDIA beat estimates.",
         )
         cluster = make_story_cluster(chunks=[chunk])
-        prompt = PromptBuilder().build(_output([cluster]), "q", [], UserProfile())
-        assert "SOURCE: Reuters (Tier 1)" in prompt
-        assert "Published: 2026-07-08" in prompt
-        assert "CHUNK_ID: doc-1#0" in prompt
-        assert "SECTION: earnings_summary" in prompt
-        assert "TEXT: NVIDIA beat estimates." in prompt
+        assembled = PromptBuilder().build(_output([cluster]), "q", [], UserProfile())
+        assert "SOURCE: Reuters (Tier 1)" in assembled.text
+        assert "Published: 2026-07-08" in assembled.text
+        # The prompt shows a short handle, and the map translates it to the real chunk_id.
+        assert "CHUNK_ID: S1" in assembled.text
+        assert "doc-1#0" not in assembled.text
+        assert assembled.chunk_id_by_handle == {"S1": "doc-1#0"}
+        assert "SECTION: earnings_summary" in assembled.text
+        assert "TEXT: NVIDIA beat estimates." in assembled.text
+
+    def test_handles_are_sequential_in_prompt_order(self):
+        chunks = [
+            make_retrieved_chunk(chunk_id="doc-a#0", similarity_score=0.9),
+            make_retrieved_chunk(chunk_id="doc-b#0", similarity_score=0.8),
+            make_retrieved_chunk(chunk_id="doc-c#0", similarity_score=0.7),
+        ]
+        cluster = make_story_cluster(chunks=chunks)
+        assembled = PromptBuilder().build(_output([cluster]), "q", [], UserProfile())
+        assert assembled.chunk_id_by_handle == {
+            "S1": "doc-a#0",
+            "S2": "doc-b#0",
+            "S3": "doc-c#0",
+        }
 
     def test_missing_section_label_renders_as_na(self):
         chunk = make_retrieved_chunk(chunk_id="a#0", section_label=None)
         cluster = make_story_cluster(chunks=[chunk])
-        prompt = PromptBuilder().build(_output([cluster]), "q", [], UserProfile())
-        assert "SECTION: n/a" in prompt
+        assert "SECTION: n/a" in _text([cluster])
 
     def test_empty_chunk_text_still_renders_a_block(self):
         chunk = make_retrieved_chunk(chunk_id="a#0", text="")
         cluster = make_story_cluster(chunks=[chunk])
-        prompt = PromptBuilder().build(_output([cluster]), "q", [], UserProfile())
-        assert "CHUNK_ID: a#0" in prompt
+        assembled = PromptBuilder().build(_output([cluster]), "q", [], UserProfile())
+        assert "CHUNK_ID: S1" in assembled.text
+        assert assembled.chunk_id_by_handle == {"S1": "a#0"}
 
 
 class TestFormatEpochEdgeCases:
@@ -196,9 +220,11 @@ class TestTokenBudget:
     def test_all_chunks_included_when_under_budget(self):
         chunks = [make_retrieved_chunk(chunk_id=f"{i}#0", text="short") for i in range(3)]
         cluster = make_story_cluster(chunks=chunks)
-        prompt = PromptBuilder(token_budget=5000).build(_output([cluster]), "q", [], UserProfile())
+        assembled = PromptBuilder(token_budget=5000).build(
+            _output([cluster]), "q", [], UserProfile()
+        )
         for chunk in chunks:
-            assert chunk.chunk_id in prompt
+            assert chunk.chunk_id in assembled.chunk_id_by_handle.values()
 
     def test_over_budget_drops_lowest_ranked_chunks_first(self):
         # Two clusters, ranked high then low; a tiny budget should keep (part of) the
@@ -212,33 +238,33 @@ class TestTokenBudget:
             cluster_id="low", chunks=[low_chunk], corroboration="single"
         )
         # Budget big enough for the header + one chunk block, not both.
-        header_tokens = len(PromptBuilder().build(_output([]), "q", [], UserProfile()).split())
+        header_tokens = len(_text([]).split())
         one_block_tokens = 20
         builder = PromptBuilder(token_budget=header_tokens + one_block_tokens)
-        prompt = builder.build(_output([high_cluster, low_cluster]), "q", [], UserProfile())
-        assert "high#0" in prompt
-        assert "low#0" not in prompt
+        assembled = builder.build(_output([high_cluster, low_cluster]), "q", [], UserProfile())
+        assert "high#0" in assembled.chunk_id_by_handle.values()
+        assert "low#0" not in assembled.chunk_id_by_handle.values()
 
     def test_zero_budget_yields_header_only_no_chunks(self):
         chunk = make_retrieved_chunk(chunk_id="a#0")
         cluster = make_story_cluster(chunks=[chunk])
-        prompt = PromptBuilder(token_budget=0).build(_output([cluster]), "q", [], UserProfile())
-        assert "a#0" not in prompt
+        assembled = PromptBuilder(token_budget=0).build(_output([cluster]), "q", [], UserProfile())
+        assert assembled.chunk_id_by_handle == {}
         # Header content (guardrails) is still present even at zero chunk budget.
-        assert GUARDRAILS[0] in prompt
+        assert GUARDRAILS[0] in assembled.text
 
     def test_dropped_chunk_never_appears_partially(self):
         # A chunk that doesn't fit contributes none of its lines, not a truncated subset.
         chunk = make_retrieved_chunk(chunk_id="dropped#0", source_name="ReallyLongSourceName")
         cluster = make_story_cluster(chunks=[chunk])
-        prompt = PromptBuilder(token_budget=1).build(_output([cluster]), "q", [], UserProfile())
-        assert "dropped#0" not in prompt
-        assert "ReallyLongSourceName" not in prompt
+        assembled = PromptBuilder(token_budget=1).build(_output([cluster]), "q", [], UserProfile())
+        assert assembled.chunk_id_by_handle == {}
+        assert "ReallyLongSourceName" not in assembled.text
 
 
 class TestEmptyRetrievalOutput:
     def test_no_clusters_still_produces_valid_prompt(self):
-        prompt = PromptBuilder().build(_output([]), "q", [], UserProfile())
+        prompt = _text([])
         assert "SOURCES:" in prompt
         for rule in GUARDRAILS:
             assert rule in prompt

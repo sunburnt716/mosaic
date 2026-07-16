@@ -64,7 +64,7 @@ class TestImmediateSuccess:
         synthesizer = Synthesizer(client=client, sleep_fn=_RecordingSleep())
         synthesizer.synthesize("my prompt")
         call = client.models.calls[0]
-        assert call["model"] == GEMINI_MODEL == "gemini-2.0-flash"
+        assert call["model"] == GEMINI_MODEL == "gemini-flash-latest"
         assert call["contents"] == "my prompt"
         assert call["config"]["temperature"] == TEMPERATURE == 0.3
         assert call["config"]["max_output_tokens"] == MAX_OUTPUT_TOKENS == 800

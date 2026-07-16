@@ -13,10 +13,13 @@ Verified:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from query.engine import OfflineRouter, QueryResult, answer, route_offline
 from retrieval.contracts import RoutingResult, UserProfile
+
+_HANDLE_RE = re.compile(r"^CHUNK_ID: (\S+)", re.MULTILINE)
 
 _NOW = datetime(2026, 7, 13, tzinfo=timezone.utc)
 _EPOCH = int(datetime(2026, 7, 12, tzinfo=timezone.utc).timestamp())
@@ -94,6 +97,26 @@ class FakeSynthesizer:
         return self._reply
 
 
+class HandleCitingSynthesizer:
+    """A well-behaved model: cites the first source *handle* (S1, …) the prompt offered it.
+
+    This is the realistic path — Gemini is shown short handles, not the raw 64-hex chunk_id,
+    so a passing test here proves the engine's handle -> chunk_id translation actually grounds.
+    """
+
+    def __init__(
+        self,
+        claim_text="Inflation in the euro area eased more than economists expected.",
+    ):
+        self._claim_text = claim_text
+        self.prompts = []
+
+    def synthesize(self, prompt):
+        self.prompts.append(prompt)
+        handle = _HANDLE_RE.search(prompt).group(1)
+        return f"CLAIM: {self._claim_text}\nSOURCE_CHUNK_ID: {handle}\nCONFIDENCE: high\n---"
+
+
 class TestRouteOffline:
     def test_builds_routing_from_profile_and_embeds_query(self):
         profile = UserProfile(tickers=["NVDA"], sectors=["semiconductors"])
@@ -141,31 +164,45 @@ class TestAnswerRetrievalOnly:
 
 
 class TestAnswerFullChain:
-    def test_grounded_claim_becomes_a_citation(self):
-        reply = (
-            "CLAIM: Inflation in the euro area eased more than economists expected.\n"
-            "SOURCE_CHUNK_ID: doc-a#0\n"
-            "CONFIDENCE: high\n"
-            "---"
-        )
+    def test_handle_cited_claim_becomes_a_citation(self):
+        # The model cites the handle it was shown; the engine translates it back to the real
+        # chunk_id and the direct-ID grounding path fires (validation_confidence == 1.0).
+        synth = HandleCitingSynthesizer()
         result = answer(
             "euro inflation",
             UserProfile(),
             collection=_fake_collection(),
             router=FakeRouter(),
-            synthesizer=FakeSynthesizer(reply),
+            synthesizer=synth,
             now=_NOW,
         )
         assert result.answer is not None
         assert len(result.answer.citations) == 1
-        assert result.answer.citations[0].tier == 2  # FT / doc-a
+        assert result.answer.citations[0].tier in (1, 2)  # a real retrieved source
         assert "euro area" in result.answer.prose
         # validated_claims exposes the grounding-gate output for observability (eval harness).
         assert result.validated_claims is not None
-        assert any(c.is_grounded for c in result.validated_claims)
+        grounded = [c for c in result.validated_claims if c.is_grounded]
+        assert grounded and grounded[0].validation_confidence == 1.0  # direct-ID hit, not semantic
+
+    def test_raw_chunk_ids_are_never_shown_to_the_model(self):
+        # The prompt must offer short handles, never the unreproducible 64-hex chunk_id.
+        synth = HandleCitingSynthesizer()
+        answer(
+            "q",
+            UserProfile(),
+            collection=_fake_collection(),
+            router=FakeRouter(),
+            synthesizer=synth,
+            now=_NOW,
+        )
+        prompt = synth.prompts[0]
+        assert "CHUNK_ID: S1" in prompt
+        assert "doc-a#0" not in prompt
+        assert "doc-b#0" not in prompt
 
     def test_prompt_reaches_synthesizer(self):
-        synth = FakeSynthesizer("CLAIM: x\nSOURCE_CHUNK_ID: doc-a#0\nCONFIDENCE: low\n---")
+        synth = HandleCitingSynthesizer()
         answer(
             "q",
             UserProfile(),
@@ -175,7 +212,7 @@ class TestAnswerFullChain:
             now=_NOW,
         )
         assert len(synth.prompts) == 1
-        assert "doc-a#0" in synth.prompts[0]
+        assert "CHUNK_ID: S1" in synth.prompts[0]
 
 
 class _WhereAwareCollection:
@@ -215,7 +252,7 @@ class _WhereAwareCollection:
 
 class TestObservabilityFields:
     def test_trace_populates_prompt_and_raw_synthesis(self):
-        reply = "CLAIM: x\nSOURCE_CHUNK_ID: doc-a#0\nCONFIDENCE: low\n---"
+        reply = "CLAIM: x\nSOURCE_CHUNK_ID: S1\nCONFIDENCE: low\n---"
         result = answer(
             "q",
             UserProfile(),
@@ -225,7 +262,7 @@ class TestObservabilityFields:
             now=_NOW,
             trace=True,
         )
-        assert result.prompt is not None and "doc-a#0" in result.prompt
+        assert result.prompt is not None and "CHUNK_ID: S1" in result.prompt
         assert result.raw_synthesis == reply
 
     def test_default_leaves_trace_fields_none(self):

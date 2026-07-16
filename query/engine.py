@@ -24,15 +24,16 @@ the retrieval steps in a CLI's no-Gemini branch.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from extraction.utils.embedding import embed_text
 from generation.claim_parser import ClaimParser
-from generation.contracts import GeneratedAnswer, LensDoc, ValidatedClaim
+from generation.contracts import GeneratedAnswer, LensDoc, ParsedClaim, ValidatedClaim
 from generation.formatter import AnswerFormatter
 from generation.prompt_builder import PromptBuilder
+from generation.synthesizer import INSUFFICIENT_DATA_MARKER
 from generation.validator import CitationValidator
 from retrieval.cluster import StoryClusterer
 from retrieval.contracts import RoutingResult, UserProfile
@@ -66,6 +67,11 @@ class QueryResult:
     response — the trace instrument's raw material for diagnosing the citation path (marker
     vs prose vs mangled IDs). Populated only when `answer(..., trace=True)`; None otherwise,
     since they can be large and normal callers don't need them.
+
+    `synthesis_failed` is True when the Gemini *call itself* failed and the fail-closed
+    synthesizer returned its `INSUFFICIENT_DATA_MARKER` (429/503/etc.). It is the one honest
+    signal separating "the API call failed" from "Gemini answered but nothing grounded" — the
+    two collapse into the same zero-citation outcome otherwise. False in retrieval-only mode.
     """
 
     routing: RoutingResult
@@ -75,6 +81,7 @@ class QueryResult:
     filter_fallback: bool = False
     prompt: Optional[str] = None
     raw_synthesis: Optional[str] = None
+    synthesis_failed: bool = False
 
 
 def route_offline(
@@ -154,7 +161,9 @@ def answer(
         # Build the prompt anyway under trace, so the instrument can show what *would* be
         # sent (and the offered CHUNK_IDs) even without a Gemini key.
         prompt = (
-            PromptBuilder().build(retrieval_output, query, lens or [], profile) if trace else None
+            PromptBuilder().build(retrieval_output, query, lens or [], profile).text
+            if trace
+            else None
         )
         return QueryResult(
             routing=routing,
@@ -169,9 +178,12 @@ def answer(
     # any retrieved chunk, not only the cluster primaries.
     chunks_by_id = {chunk.chunk_id: chunk for chunk in ranked}
 
-    prompt = PromptBuilder().build(retrieval_output, query, lens or [], profile)
-    raw_text = synthesizer.synthesize(prompt)
-    claims = ClaimParser().parse(raw_text)
+    assembled = PromptBuilder().build(retrieval_output, query, lens or [], profile)
+    raw_text = synthesizer.synthesize(assembled.text)
+    parsed = ClaimParser().parse(raw_text)
+    # Gemini cites the short handle (S1, S2, …) it was shown; translate back to the real
+    # chunk_id before grounding, so the validator's id lookup and chunks_by_id are unchanged.
+    claims = _resolve_handles(parsed, assembled.chunk_id_by_handle)
     validated = CitationValidator().validate(claims, chunks_by_id)
     generated = AnswerFormatter().format(validated, chunks_by_id, clusters)
 
@@ -181,6 +193,25 @@ def answer(
         answer=generated,
         validated_claims=validated,
         filter_fallback=search.last_filter_fallback,
-        prompt=prompt if trace else None,
+        prompt=assembled.text if trace else None,
         raw_synthesis=raw_text if trace else None,
+        synthesis_failed=(raw_text == INSUFFICIENT_DATA_MARKER),
     )
+
+
+def _resolve_handles(
+    claims: list[ParsedClaim], chunk_id_by_handle: dict[str, str]
+) -> list[ParsedClaim]:
+    """Map each claim's `source_chunk_id` from a prompt handle (S1, …) to the real chunk_id.
+
+    A handle the map doesn't know (the model omitted or garbled it) passes through unchanged
+    and simply fails the grounding lookup downstream — no exception, no false match.
+    """
+    resolved = []
+    for claim in claims:
+        handle = claim.source_chunk_id
+        if handle is not None and handle in chunk_id_by_handle:
+            resolved.append(replace(claim, source_chunk_id=chunk_id_by_handle[handle]))
+        else:
+            resolved.append(claim)
+    return resolved
