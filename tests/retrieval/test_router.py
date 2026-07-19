@@ -90,6 +90,31 @@ class TestProfileBackfill:
         assert result.tickers == ["NVDA"]
 
 
+class TestTickerValidation:
+    def test_hallucinated_ticker_filtered_out(self, fake_query_embedder, monkeypatch):
+        import retrieval.router as router_module
+
+        monkeypatch.setattr(router_module, "is_valid_ticker", lambda t: t == "NVDA")
+        client = make_groq_client(
+            intent="company_news", tickers=["NVDA", "NOTREAL"], sectors=[], time_window_days=30
+        )
+        router = QueryRouter(client=client, embedder=fake_query_embedder)
+        result = router.route("q", make_user_profile())
+        assert result.tickers == ["NVDA"]
+
+    def test_all_invalid_falls_back_to_profile(self, fake_query_embedder, monkeypatch):
+        import retrieval.router as router_module
+
+        monkeypatch.setattr(router_module, "is_valid_ticker", lambda t: False)
+        client = make_groq_client(
+            intent="company_news", tickers=["NOTREAL"], sectors=[], time_window_days=30
+        )
+        router = QueryRouter(client=client, embedder=fake_query_embedder)
+        profile = make_user_profile(tickers=["AAPL"])
+        result = router.route("q", profile)
+        assert result.tickers == ["AAPL"]
+
+
 class TestFallbackBehavior:
     def test_malformed_json_falls_back_to_unknown(self, fake_query_embedder):
         from tests.retrieval.conftest import FakeGroqClient

@@ -12,7 +12,19 @@ import json
 
 import pytest
 
+import shared.tickers as tickers_module
 from tests.extraction.conftest import fake_embedder  # noqa: F401 — re-exported as a fixture
+
+# Tickers referenced across the router test suite's fake Groq replies/profiles.
+_TEST_TICKERS = {"NVDA", "TSLA", "TSMC", "AAPL"}
+
+
+@pytest.fixture(autouse=True)
+def seed_valid_tickers(monkeypatch):
+    """Seed shared.tickers' cache so router tests exercise ticker-extraction logic without
+    depending on a real SEC refresh. Tests for the filtering behavior itself monkeypatch
+    is_valid_ticker directly rather than relying on this fixed set."""
+    monkeypatch.setattr(tickers_module, "_valid_tickers", set(_TEST_TICKERS))
 
 
 class _FakeMessage:

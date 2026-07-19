@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 from extraction.utils.embedding import embed_text
 from retrieval.contracts import RoutingResult, UserProfile
+from shared.tickers import is_valid_ticker
 
 VALID_INTENTS = {"earnings_deep_dive", "sector_trend", "company_news", "unknown"}
 DEFAULT_TIME_WINDOW_DAYS = 30
@@ -104,7 +105,7 @@ class QueryRouter:
         if not isinstance(intent, str) or intent not in VALID_INTENTS:
             intent = "unknown"
 
-        tickers = _as_string_list(raw.get("tickers"))
+        tickers = [t for t in _as_string_list(raw.get("tickers")) if is_valid_ticker(t)]
         sectors = _as_string_list(raw.get("sectors"))
         if not tickers:
             tickers = list(profile.tickers)
